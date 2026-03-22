@@ -96,7 +96,11 @@ def build_option_aliases(vep_options):
 
 
 def _match_option(text, aliases):
-    """Try to match a text fragment to an option id."""
+    """Try to match a text fragment to an option id.
+
+    Uses direct matching first, then substring matching with a minimum
+    length of 4 characters to avoid false positives from short fragments.
+    """
     text = text.strip().lower().replace("-", "_").replace(" ", "_")
     # direct
     if text in aliases:
@@ -105,39 +109,50 @@ def _match_option(text, aliases):
     stripped = text.lstrip("_")
     if stripped in aliases:
         return aliases[stripped]
-    # substring match (shortest alias that is fully contained)
-    for alias, oid in sorted(aliases.items(), key=lambda x: -len(x[0])):
-        if alias in text or text in alias:
-            return oid
+    # substring match — require both sides >= 4 chars to reduce false positives
+    if len(text) >= 4:
+        for alias, oid in sorted(aliases.items(), key=lambda x: -len(x[0])):
+            if len(alias) >= 4 and (alias in text or text in alias):
+                return oid
     return None
 
 
 def extract_recommendations(text, option_aliases):
-    """Parse LLM output to extract which options are enabled/disabled."""
+    """Parse LLM output to extract which options are enabled/disabled.
+
+    Parses table rows first, then also scans non-table prose lines so that
+    options mentioned outside tables are not silently dropped.  Prose
+    scanning uses word-boundary matching to avoid false positives from
+    common English words that happen to match short alias strings.
+    """
     enabled = set()
     disabled = set()
     text_lower = text.lower()
 
-    # Try table rows: | option | ENABLE/DISABLE | ...
+    # --- Phase 1: parse table rows ---
     table_rows = re.findall(
         r"\|\s*\*{0,2}([^|]+?)\*{0,2}\s*\|\s*\*{0,2}(enable|disable|on|off|yes|no|true|false)\*{0,2}\s*\|",
         text_lower,
     )
-    if table_rows:
-        for opt_text, status in table_rows:
-            opt_text = opt_text.strip().strip("`").strip("*")
-            matched = _match_option(opt_text, option_aliases)
-            if matched:
-                if status in ("enable", "on", "yes", "true"):
-                    enabled.add(matched)
-                else:
-                    disabled.add(matched)
-        return enabled, disabled
+    for opt_text, status in table_rows:
+        opt_text = opt_text.strip().strip("`").strip("*")
+        matched = _match_option(opt_text, option_aliases)
+        if matched:
+            if status in ("enable", "on", "yes", "true"):
+                enabled.add(matched)
+            else:
+                disabled.add(matched)
 
-    # Fallback: line-by-line scanning for "option: enable/on" or "enable option"
+    # --- Phase 2: scan non-table lines for prose recommendations ---
     for line in text_lower.split("\n"):
+        # Skip table rows (already parsed above)
+        if "|" in line:
+            continue
         for alias, oid in option_aliases.items():
-            if alias not in line:
+            if oid in enabled or oid in disabled:
+                continue  # already resolved via table
+            # Word-boundary matching to avoid "pick" matching "picking" etc.
+            if not re.search(r"\b" + re.escape(alias) + r"\b", line):
                 continue
             # check context around the alias
             if re.search(r"(enabl|turn.{0,3}on|\bon\b|recommend|include|add|use )", line):
@@ -200,13 +215,14 @@ _SPECIES_KEYWORDS = {
 
 
 def infer_species(user_query: str) -> str:
-    """Detect species from the user query using keyword matching.
+    """Detect species from the user query using word-boundary matching.
 
     Returns the species name (e.g. 'mouse', 'zebrafish') or 'human' (default).
+    Uses regex word boundaries to avoid false positives like 'rat' in 'generated'.
     """
     query_lower = user_query.lower()
     for keyword, species in _SPECIES_KEYWORDS.items():
-        if keyword in query_lower:
+        if re.search(r"\b" + re.escape(keyword) + r"\b", query_lower):
             return species
     return "human"
 

@@ -15,7 +15,8 @@ except ImportError:
     print("Error: openai SDK not installed. Run: pip install openai")
     sys.exit(1)
 
-from vep_assistant import load_knowledge_base, build_system_prompt, infer_species
+from vep_assistant import (load_knowledge_base, build_system_prompt, infer_species,
+                          build_option_aliases, extract_recommendations)
 
 import argparse
 
@@ -109,104 +110,23 @@ TEST_QUERIES = [
         "ground_truth_id": "quick_lookup",
         "source": "https://www.biostars.org/p/355992/",
     },
+    # Synthetic — splice-focused analysis to cover SpliceAI and MaxEntScan
+    {
+        "id": "test_splice",
+        "query": (
+            "I have a list of intronic variants near splice junctions from "
+            "whole exome sequencing of rare disease patients. I want to predict "
+            "which ones might disrupt splicing."
+        ),
+        "ground_truth_id": "splice_analysis",
+        "source": "synthetic",
+    },
 ]
 
 BARE_SYSTEM_PROMPT = (
     "You are a VEP configuration expert. Recommend VEP options for the user's "
     "scenario. List which options to enable/disable."
 )
-
-
-# ---------------------------------------------------------------------------
-# Fuzzy option extraction from free-text LLM output
-# ---------------------------------------------------------------------------
-
-def build_option_aliases(vep_options):
-    """Build a map of alias → option_id for fuzzy matching."""
-    aliases = {}
-    for opt in vep_options:
-        oid = opt["id"]
-        # canonical id
-        aliases[oid.lower()] = oid
-        # name
-        aliases[opt["name"].lower()] = oid
-        # cli flags (split on /)
-        for flag in re.split(r"[/,\s]+", opt["cli_flag"]):
-            flag = flag.strip().lstrip("-").lower()
-            if len(flag) > 2:
-                aliases[flag] = oid
-    # common extra aliases
-    extras = {
-        "polyphen2": "polyphen", "polyphen-2": "polyphen",
-        "splice_ai": "spliceai", "splice ai": "spliceai",
-        "alpha_missense": "alphamissense", "alpha missense": "alphamissense",
-        "gnomad": "gnomad_af", "gnomad_freq": "gnomad_af",
-        "gnomad_sv_freq": "gnomad_sv",
-        "1000genomes": "af_1kg", "1000_genomes": "af_1kg", "1kg": "af_1kg",
-        "af_1kg": "af_1kg",
-        "maxentscan": "maxentscan", "max_ent_scan": "maxentscan",
-        "mane": "mane_select",
-        "gene_pheno": "gene_phenotype", "phenotype": "gene_phenotype",
-        "existing": "check_existing", "check existing": "check_existing",
-        "clinvar_structural": "clinvar_sv",
-        "gnomad_structural": "gnomad_sv",
-    }
-    for alias, oid in extras.items():
-        aliases[alias] = oid
-    return aliases
-
-
-def extract_recommendations(text, option_aliases):
-    """Parse LLM output to extract which options are enabled/disabled."""
-    enabled = set()
-    disabled = set()
-    text_lower = text.lower()
-
-    # Try table rows: | option | ENABLE/DISABLE | ...
-    table_rows = re.findall(
-        r"\|\s*\*{0,2}([^|]+?)\*{0,2}\s*\|\s*\*{0,2}(enable|disable|on|off|yes|no|true|false)\*{0,2}\s*\|",
-        text_lower,
-    )
-    if table_rows:
-        for opt_text, status in table_rows:
-            opt_text = opt_text.strip().strip("`").strip("*")
-            matched = _match_option(opt_text, option_aliases)
-            if matched:
-                if status in ("enable", "on", "yes", "true"):
-                    enabled.add(matched)
-                else:
-                    disabled.add(matched)
-        return enabled, disabled
-
-    # Fallback: line-by-line scanning for "option: enable/on" or "enable option"
-    for line in text_lower.split("\n"):
-        for alias, oid in option_aliases.items():
-            if alias not in line:
-                continue
-            # check context around the alias
-            if re.search(r"(enabl|turn.{0,3}on|\bon\b|recommend|include|add|use )", line):
-                enabled.add(oid)
-            elif re.search(r"(disabl|turn.{0,3}off|\boff\b|skip|omit|not.{0,6}need|unnecessary|don.t)", line):
-                disabled.add(oid)
-
-    return enabled, disabled
-
-
-def _match_option(text, aliases):
-    """Try to match a text fragment to an option id."""
-    text = text.strip().lower().replace("-", "_").replace(" ", "_")
-    # direct
-    if text in aliases:
-        return aliases[text]
-    # strip leading dashes (cli flags)
-    stripped = text.lstrip("_")
-    if stripped in aliases:
-        return aliases[stripped]
-    # substring match (shortest alias that is fully contained)
-    for alias, oid in sorted(aliases.items(), key=lambda x: -len(x[0])):
-        if alias in text or text in alias:
-            return oid
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -234,16 +154,22 @@ def extract_use_case(response_text):
 
 
 def measure_citation_rate(response_text):
-    """Measure what fraction of recommendation lines include [source: ...] citations."""
+    """Measure what fraction of recommendation lines include [source: ...] citations.
+
+    Option names are derived from vep_options.json IDs plus common short names
+    so any new options added to the knowledge base are automatically recognised.
+    """
     recommendation_lines = 0
     cited_lines = 0
+    # All option IDs from the knowledge base, plus common short names that
+    # an LLM might use instead of the canonical ID.
     option_names = [
         "sift", "polyphen", "cadd", "clinvar", "gnomad", "hgvs",
         "symbol", "mane", "canonical", "pick", "regulatory",
         "spliceai", "revel", "alphamissense", "transcript",
         "domains", "protein", "check_existing", "gene_phenotype",
         "af_1kg", "most_severe", "per_gene", "maxentscan",
-        "gnomad_sv", "clinvar_sv",
+        "gnomad_sv", "clinvar_sv", "summary",
     ]
     for line in response_text.split("\n"):
         line_lower = line.lower().strip()
@@ -254,7 +180,7 @@ def measure_citation_rate(response_text):
             continue
         if any(name in line_lower for name in option_names):
             recommendation_lines += 1
-            if "[source:" in line_lower or "[source :" in line_lower:
+            if re.search(r"\[source\s*:", line_lower):
                 cited_lines += 1
     rate = cited_lines / recommendation_lines if recommendation_lines > 0 else 0.0
     return rate, cited_lines, recommendation_lines
@@ -403,12 +329,22 @@ def aggregate_scores(score_list):
         agg[key] = statistics.mean(values)
         agg[key + "_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
 
-    # Non-numeric: use last run's values for display
+    # Non-numeric: use last run's values for display but compute mean counts
     last = score_list[-1]
     for key in ("enabled_found", "disabled_found", "correct_enables",
                 "correct_disables", "species_violations", "conflict_violations",
                 "use_case_detected", "citations_found", "total_recommendations"):
         agg[key] = last.get(key)
+
+    # Mean counts across runs (used in report instead of last-run sets)
+    agg["enabled_count_mean"] = statistics.mean(
+        len(s["enabled_found"]) for s in score_list)
+    agg["disabled_count_mean"] = statistics.mean(
+        len(s["disabled_found"]) for s in score_list)
+    agg["species_violations_mean"] = statistics.mean(
+        len(s["species_violations"]) for s in score_list)
+    agg["conflict_violations_mean"] = statistics.mean(
+        len(s["conflict_violations"]) for s in score_list)
 
     # Use case accuracy across runs: fraction correct
     uc_correct_count = sum(1 for s in score_list if s.get("use_case_correct", False))
@@ -494,6 +430,7 @@ def generate_report(all_results):
         lines.append(f"**Seeds:** {seeds}")
     lines.append(f"**Temperature:** {temperature}")
     lines.append(f"**Max tokens:** 4096")
+    lines.append(f"**Evaluation mode:** Leave-one-out (ground truth example excluded from retrieval corpus)")
     lines.append("")
 
     # --- Per-query results ---
@@ -515,11 +452,14 @@ def generate_report(all_results):
         lines.append("| Metric | " + " | ".join(col_labels) + " |")
         lines.append("|--------" + "|---" * len(conditions) + "|")
 
-        # Options detected
+        # Options detected (use mean counts when multi-run)
         cells = []
         for key, _ in conditions:
             d = _get(r, key)
-            cells.append(f"{len(d['enabled_found'])} en / {len(d['disabled_found'])} dis")
+            if num_runs > 1 and "enabled_count_mean" in d:
+                cells.append(f"{d['enabled_count_mean']:.0f} en / {d['disabled_count_mean']:.0f} dis")
+            else:
+                cells.append(f"{len(d['enabled_found'])} en / {len(d['disabled_found'])} dis")
         lines.append("| Options detected | " + " | ".join(cells) + " |")
 
         # Numeric metrics
@@ -527,10 +467,22 @@ def generate_report(all_results):
             cells = [_fmt_metric(_get(r, key), mk, num_runs) for key, _ in conditions]
             lines.append(f"| {ml} | " + " | ".join(cells) + " |")
 
-        # Violations
-        cells = [str(len(_get(r, key)["species_violations"])) for key, _ in conditions]
+        # Violations (use mean counts when multi-run)
+        cells = []
+        for key, _ in conditions:
+            d = _get(r, key)
+            if num_runs > 1 and "species_violations_mean" in d:
+                cells.append(f"{d['species_violations_mean']:.1f}")
+            else:
+                cells.append(str(len(d["species_violations"])))
         lines.append("| Species violations | " + " | ".join(cells) + " |")
-        cells = [str(len(_get(r, key)["conflict_violations"])) for key, _ in conditions]
+        cells = []
+        for key, _ in conditions:
+            d = _get(r, key)
+            if num_runs > 1 and "conflict_violations_mean" in d:
+                cells.append(f"{d['conflict_violations_mean']:.1f}")
+            else:
+                cells.append(str(len(d["conflict_violations"])))
         lines.append("| Conflict violations | " + " | ".join(cells) + " |")
 
         # Interpretability
@@ -675,6 +627,7 @@ def main():
     print(f"Runs: {num_runs} (seeds: {base_seed}\u2013{base_seed + num_runs - 1})")
     print(f"Temperature: {temperature}")
     print(f"Total LLM calls: {total_calls}")
+    print(f"Evaluation mode: leave-one-out (ground truth excluded from retrieval)")
     print()
 
     vep_options, training_examples = load_knowledge_base()
@@ -696,29 +649,34 @@ def main():
 
     for i, test in enumerate(TEST_QUERIES, 1):
         query = test["query"]
+        gt_id = test["ground_truth_id"]
         gt_category, gt_enabled, gt_disabled = get_ground_truth(
-            training_examples, test["ground_truth_id"]
+            training_examples, gt_id
         )
 
         print(f"[{i}/{len(TEST_QUERIES)}] {test['id']}")
         print(f"  Ground truth: {gt_category} ({len(gt_enabled)} en / {len(gt_disabled)} dis)")
 
-        # Cache system prompts per query
+        # Leave-one-out: exclude the ground truth example from the retrieval
+        # corpus so the model is never shown the exact answer it's scored against.
+        loo_examples = [ex for ex in training_examples if ex["id"] != gt_id]
+
+        # Cache system prompts per query (each query's LOO set is unique)
         if query not in sys_prompt_kw_cache:
             sys_prompt_kw_cache[query] = build_system_prompt(
-                vep_options, training_examples, query, retrieval_mode="keyword"
+                vep_options, loo_examples, query, retrieval_mode="keyword"
             )
         sys_prompt_kw = sys_prompt_kw_cache[query]
 
         if use_all_examples and query not in sys_prompt_all_cache:
             sys_prompt_all_cache[query] = build_system_prompt(
-                vep_options, training_examples, query, retrieval_mode="all"
+                vep_options, loo_examples, query, retrieval_mode="all"
             )
         sys_prompt_all = sys_prompt_all_cache.get(query)
 
         if use_semantic and query not in sys_prompt_sem_cache:
             sys_prompt_sem_cache[query] = build_system_prompt(
-                vep_options, training_examples, query, retrieval_mode="semantic"
+                vep_options, loo_examples, query, retrieval_mode="semantic"
             )
         sys_prompt_sem = sys_prompt_sem_cache.get(query)
 
