@@ -149,7 +149,7 @@ results/                # Saved recommendations and evaluation reports
 
 ## Knowledge base
 
-The knowledge base covers 8 use case categories:
+The knowledge base covers 8 training examples across 7 use case categories:
 
 | Category | Example scenario |
 |----------|-----------------|
