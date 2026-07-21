@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Evaluate VEP AI Assistant: knowledge-base-enhanced vs bare model."""
+"""Evaluate VEP AI Assistant: knowledge-base-enhanced vs bare model.
+
+Offline benchmark that sits at the end of the pipeline (retrieval -> prompt -> LLM ->
+parse -> checker): for each test query it runs the LLM under the 4 conditions
+(bare / keyword / all-examples / semantic), reuses vep_assistant's parser, and scores
+the recommended options against a leave-one-out ground-truth example. Headline metric is
+priority-weighted Enable F1 (a critical option counts ~3x an optional one). Multi-run
+(--runs) reports mean ± SD; a markdown report is written per model.
+"""
 
 import json
 import os
@@ -16,7 +24,7 @@ except ImportError:
     sys.exit(1)
 
 from vep_assistant import (load_knowledge_base, build_system_prompt, infer_species,
-                          build_option_aliases, extract_recommendations)
+                          build_option_aliases, extract_recommendations, _is_human_only)
 
 import argparse
 
@@ -123,6 +131,13 @@ TEST_QUERIES = [
     },
 ]
 
+# Allow running on a custom test set (e.g. the real-project bootstrap set) via
+# VEP_TESTSET_FILE; defaults to the demo's hardcoded TEST_QUERIES above.
+_TESTSET_FILE = os.environ.get("VEP_TESTSET_FILE")
+if _TESTSET_FILE:
+    with open(_TESTSET_FILE) as _f:
+        TEST_QUERIES = json.load(_f)
+
 BARE_SYSTEM_PROMPT = (
     "You are a VEP configuration expert. Recommend VEP options for the user's "
     "scenario. List which options to enable/disable."
@@ -154,10 +169,18 @@ def extract_use_case(response_text):
 
 
 def measure_citation_rate(response_text):
-    """Measure what fraction of recommendation lines include [source: ...] citations.
+    """DEPRECATED (2026-06-13) — superseded by attribution (run_attribution.py); do not report.
 
-    Option names are derived from vep_options.json IDs plus common short names
-    so any new options added to the knowledge base are automatically recognised.
+    Measures FORMAT COMPLIANCE (does a line contain '[source:'), NOT citation validity, and is
+    unreliable: (1) it miscounts the indented 'Reason:' line as an uncited recommendation (the [source:]
+    tag is on the ✓ line above) -> ~-14% deflation on logged data (honest=100%, reported=86%); (2) the
+    `option_names` list below is a HARDCODED demo-era (26-name) vocabulary, NOT derived from the KB despite
+    the prior docstring's claim -> 32/58 expanded-catalogue ids are unrecognised and ~25% of real ✓/✗
+    lines are invisible; (3) substring matching has no word boundaries ("protein"⊂"protein_coding");
+    (4) it cannot tell a faithful citation from a hallucinated one ('[source: nonsense]' counts as cited),
+    and since the prompt forces a [source:] on every line a correct version is ~always 100% (uninformative).
+    The meaningful signal — is the citation correct/grounded — is faithfulness, measured causally by
+    run_attribution.py. Kept only so legacy report code runs. See EXPERIMENTS.md 'Metric deprecation'.
     """
     recommendation_lines = 0
     cited_lines = 0
@@ -205,26 +228,71 @@ def get_ground_truth(training_examples, gt_id):
     return None, set(), set()
 
 
-def check_species_violations(enabled, vep_options, query):
-    """Check if human-only options were enabled for non-human species.
+def get_ground_truth_values(training_examples, gt_id):
+    """Return {option_id: value} for the enabled options of a ground-truth example.
 
-    Uses the same infer_species() and is_human_only logic as
-    vep_assistant.check_and_fix_violations() to stay consistent.
+    Used by value-aware scoring (below). Kept separate from get_ground_truth so
+    existing callers are unaffected.
+    """
+    for ex in training_examples:
+        if ex["id"] == gt_id:
+            return {
+                name: cfg.get("value")
+                for name, cfg in ex["recommended_options"].items()
+                if cfg.get("enabled") and cfg.get("value") not in (None, "", True, False)
+            }
+    return {}
+
+
+def _normalize_value(v):
+    return str(v).strip().lower()
+
+
+def score_value_accuracy(predicted_values, gt_values):
+    """Fraction of ground-truth-valued options whose predicted value matches.
+
+    Addresses the demo's "value field ignored" limitation (e.g. ground truth
+    gnomad value 'gnomAD exome' vs 'gnomAD genome'). predicted_values is a
+    {option_id: value} map produced by the structured-output path (see
+    gsoc_phase1/output_schema) or a value-aware parser; the free-text demo
+    parser does not yet populate it, so this is wired but inert until then.
+
+    Returns (accuracy, matched, total).
+    """
+    if not gt_values:
+        return 1.0, 0, 0
+    matched = 0
+    for oid, gv in gt_values.items():
+        pv = predicted_values.get(oid)
+        if pv is not None and _normalize_value(pv) == _normalize_value(gv):
+            matched += 1
+    return matched / len(gt_values), matched, len(gt_values)
+
+
+def check_species_violations(enabled, vep_options, query):
+    """Check if human-only options were enabled for a positively-identified non-human species.
+
+    Mirrors vep_assistant.check_and_fix_violations()'s fail-closed posture: infer_species() now returns
+    'human' / a non-human species / 'unknown', and the deployed checker treats 'unknown' as "keep
+    human-only options, just flag" (stripping on unknown would wrongly break the many human queries that
+    never say "human"). So a violation is counted only for a CONFIRMED non-human species — 'unknown'
+    returns set() like 'human'; otherwise this metric would report spurious species violations for the
+    ~8/20 human-but-unspecified queries (GWAS / population / regulatory / SV).
     """
     species = infer_species(query)
-    if species == "human":
+    if species in ("human", "unknown"):
         return set()
 
-    human_only = set()
-    for opt in vep_options:
-        restriction = opt.get("species_restriction", "all species").lower()
-        is_human_only = (
-            "human" in restriction
-            and "all" not in restriction
-            and "human and" not in restriction
-        )
-        if is_human_only:
-            human_only.add(opt["id"])
+    # Reuse the deployed checker's OWN predicate rather than re-implementing it. This used to carry a
+    # local copy testing `"human and" not in restriction`, which vep_assistant._is_human_only was
+    # explicitly rewritten to replace — and the two had since drifted apart on real catalogue values:
+    # `ccds` ("human + mouse only") and `var_synonyms` ("human + pig only") say "human", don't say "all",
+    # and don't contain the literal "human and", so the old copy called them human-only while the shipped
+    # checker (and score_metrics, which already imports the fixed predicate) does not. That made this
+    # metric report species violations the deployed system does not commit. Importing the one predicate
+    # means it cannot drift a third time.
+    human_only = {opt["id"] for opt in vep_options
+                  if _is_human_only(opt.get("species_restriction", "all species"))}
     return enabled & human_only
 
 
@@ -242,20 +310,85 @@ def check_conflict_violations(enabled, vep_options):
     return violations
 
 
-def score_response(enabled, disabled, gt_enabled, gt_disabled, vep_options, query):
-    """Compute all metrics for one response."""
-    # Precision/recall for enables
+# Priority -> weight for priority-weighted scoring. Floor of 1 so every option
+# costs something as a false positive; important options weigh more. Addresses
+# the demo's "all options weighted equally" limitation.
+_PRIORITY_WEIGHT = {"critical": 3, "recommended": 2, "optional": 1, "not_applicable": 1}
+
+
+def _option_weight(option_id, use_case, priority_lookup):
+    """Weight of an option for a given use case (default 1 if unknown).
+
+    CAVEAT (silent degenerate mode): use_case falsy -> returns 1 for EVERYTHING, so the priority-weighted
+    metrics in score_response silently collapse to the unweighted ones but are still reported under the
+    enable_*_weighted keys, with no warning. All real callers pass gt_category; nothing enforces it.
+    """
+    if not use_case:
+        return 1
+    priority = priority_lookup.get(option_id, {}).get(use_case)
+    return _PRIORITY_WEIGHT.get(priority, 1)
+
+
+def score_response(enabled, disabled, gt_enabled, gt_disabled, vep_options, query,
+                   gt_category=None):
+    """Compute all metrics for one response.
+
+    gt_category enables priority-weighted enable metrics: getting a critical
+    option right counts more than an ubiquitous/optional one.
+    """
+    # Precision/recall for enables.
+    # CAVEAT (exact-id match): intersection on canonical ids -> interchangeable options (e.g. CADD vs REVEL
+    # vs AlphaMissense pathogenicity predictors) score as BOTH a false positive and a false negative, so
+    # enable F1 is a harsh LOWER BOUND on real quality on this ambiguous task. score_metrics.py adds the
+    # softer category_cover / critical_recall for exactly this reason.
     correct_en = enabled & gt_enabled
-    precision_en = len(correct_en) / len(enabled) if enabled else 0
-    recall_en = len(correct_en) / len(gt_enabled) if gt_enabled else 0
-    f1_en = (2 * precision_en * recall_en / (precision_en + recall_en)) if (precision_en + recall_en) else 0
+    # 0-not-None: a rate whose denominator is 0 is UNDEFINED (None), not 0 — so aggregate_scores can SKIP
+    # it rather than average a spurious 0 (precision when the model predicted nothing; recall when the gold
+    # has none). F1 is None whenever either component is undefined.
+    precision_en = len(correct_en) / len(enabled) if enabled else None
+    recall_en = len(correct_en) / len(gt_enabled) if gt_enabled else None
+    f1_en = None if (precision_en is None or recall_en is None) else (
+        2 * precision_en * recall_en / (precision_en + recall_en) if (precision_en + recall_en) else 0)
 
-    # Precision/recall for disables
+    # Precision/recall for disables.
+    # CAVEAT (open-world scored as closed-world): the "should be off" universe is all 58 options, but the
+    # gold lists only a handful of EXPLICIT disables (<=6, median ~3 in the 20-example set); an option the
+    # model never mentions is neither credited nor penalised. So these cover a small, weakly-defined slice
+    # -> do NOT lean on disable_f1 as hard as enable_f1.
+    # 0-not-None (FIXED): undefined cases now return None (not 0) — recall_dis/f1_dis when gt_disabled is
+    # empty (1/20 gold examples), and precision_en/f1_en when the model/parser emitted nothing — and
+    # _safe_mean/_pct skip None, so they no longer bias the means toward 0 or render as a spurious "0%".
     correct_dis = disabled & gt_disabled
-    precision_dis = len(correct_dis) / len(disabled) if disabled else 0
-    recall_dis = len(correct_dis) / len(gt_disabled) if gt_disabled else 0
-    f1_dis = (2 * precision_dis * recall_dis / (precision_dis + recall_dis)) if (precision_dis + recall_dis) else 0
+    precision_dis = len(correct_dis) / len(disabled) if disabled else None
+    recall_dis = len(correct_dis) / len(gt_disabled) if gt_disabled else None    # None when gold has no disables
+    f1_dis = None if (precision_dis is None or recall_dis is None) else (
+        2 * precision_dis * recall_dis / (precision_dis + recall_dis) if (precision_dis + recall_dis) else 0)
 
+    # Priority-weighted enable metrics (weight by importance for the use case).
+    # Same precision/recall/F1 shape as above, but each option contributes its
+    # _PRIORITY_WEIGHT instead of 1 — so missing a 'critical' option hurts recall far
+    # more than missing an 'optional' one. (Unweighted f1_en is kept for back-compat /
+    # consistency checks against older runs.)
+    # CAVEAT (weighting precision is non-standard): importance-weighting conventionally applies to RECALL
+    # only. Weighting precision (wp_den below) makes a critical true-positive LIFT precision -- so two
+    # models that each made exactly one junk recommendation can differ in weighted precision purely by how
+    # important the option they got RIGHT was (that is recall's job, not precision's). Prefer weighted
+    # RECALL (enable_recall_weighted) as the cleaner headline; enable_f1_weighted inherits this property.
+    priority_lookup = {o["id"]: o.get("priority_by_use_case", {}) for o in vep_options}
+    def w(oid):
+        return _option_weight(oid, gt_category, priority_lookup)
+    num = sum(w(o) for o in correct_en)      # weighted true positives
+    wp_den = sum(w(o) for o in enabled)      # weighted predicted-positives (precision denom)
+    wr_den = sum(w(o) for o in gt_enabled)   # weighted gold-positives (recall denom)
+    wprec = num / wp_den if wp_den else None
+    wrec = num / wr_den if wr_den else None
+    wf1 = None if (wprec is None or wrec is None) else (
+        2 * wprec * wrec / (wprec + wrec) if (wprec + wrec) else 0)
+
+    # NOTE (pre-checker): `enabled` is the RAW parser output, BEFORE check_and_fix_violations runs. These
+    # therefore count the MODEL's raw harm, not the shipped system -- in deployment the deterministic
+    # checker drives species/conflict violations to 0. Do not read "species_violations: N" as a property
+    # of the deployed pipeline.
     species_viols = check_species_violations(enabled, vep_options, query)
     conflict_viols = check_conflict_violations(enabled, vep_options)
 
@@ -267,6 +400,9 @@ def score_response(enabled, disabled, gt_enabled, gt_disabled, vep_options, quer
         "enable_precision": precision_en,
         "enable_recall": recall_en,
         "enable_f1": f1_en,
+        "enable_precision_weighted": wprec,
+        "enable_recall_weighted": wrec,
+        "enable_f1_weighted": wf1,
         "disable_precision": precision_dis,
         "disable_recall": recall_dis,
         "disable_f1": f1_dis,
@@ -279,6 +415,9 @@ def score_response(enabled, disabled, gt_enabled, gt_disabled, vep_options, quer
 # LLM call
 # ---------------------------------------------------------------------------
 
+_MAX_TOKENS = 4096   # single source of truth — referenced by the report header so the two can't drift
+
+
 def call_llm(client, model, system_prompt, user_query, temperature=0.7, seed=None):
     """Call Ollama and return full response text."""
     kwargs = dict(
@@ -287,7 +426,7 @@ def call_llm(client, model, system_prompt, user_query, temperature=0.7, seed=Non
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
         ],
-        max_tokens=4096,
+        max_tokens=_MAX_TOKENS,
         stream=True,
         temperature=temperature,
     )
@@ -308,9 +447,27 @@ def call_llm(client, model, system_prompt, user_query, temperature=0.7, seed=Non
 
 _NUMERIC_METRICS = [
     "enable_precision", "enable_recall", "enable_f1",
+    "enable_precision_weighted", "enable_recall_weighted", "enable_f1_weighted",
     "disable_precision", "disable_recall", "disable_f1",
     "citation_rate",
 ]
+
+
+def _safe_mean(values):
+    """Mean over DEFINED (non-None) values; None if all are undefined. Lets undefined metrics (0/0 cases)
+    and excluded errored runs be skipped rather than averaged in as a spurious 0 (the 0-not-None fix)."""
+    vals = [v for v in values if v is not None]
+    return statistics.mean(vals) if vals else None
+
+
+def _pct(x):
+    """Format a 0-1 metric as a percentage, or 'n/a' when undefined (None)."""
+    return "n/a" if x is None else f"{x:.0%}"
+
+
+def _pct_delta(a, b):
+    """Signed percentage delta, or 'n/a' if either side is undefined."""
+    return "n/a" if (a is None or b is None) else f"{a - b:+.0%}"
 
 
 def aggregate_scores(score_list):
@@ -323,33 +480,32 @@ def aggregate_scores(score_list):
     if len(score_list) == 1:
         return score_list[0]
 
-    agg = {}
+    # Fix 3 (errored calls): exclude all-zero errored runs from the means (fall back to all if EVERY run
+    # errored). Fix 2 (0-not-None): _safe_mean skips undefined (None) metrics so they don't bias toward 0.
+    ok = [s for s in score_list if not s.get("_errored")] or score_list
+    agg = {"_n_errored": sum(1 for s in score_list if s.get("_errored"))}
     for key in _NUMERIC_METRICS:
-        values = [s[key] for s in score_list]
-        agg[key] = statistics.mean(values)
-        agg[key + "_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
+        agg[key] = _safe_mean([s.get(key) for s in ok])
+        defined = [s.get(key) for s in ok if s.get(key) is not None]
+        agg[key + "_std"] = statistics.stdev(defined) if len(defined) > 1 else 0.0
 
-    # Non-numeric: use last run's values for display but compute mean counts
-    last = score_list[-1]
+    # Non-numeric: use last (successful) run's values for display; counts averaged over `ok`
+    last = ok[-1]
     for key in ("enabled_found", "disabled_found", "correct_enables",
                 "correct_disables", "species_violations", "conflict_violations",
                 "use_case_detected", "citations_found", "total_recommendations"):
         agg[key] = last.get(key)
 
     # Mean counts across runs (used in report instead of last-run sets)
-    agg["enabled_count_mean"] = statistics.mean(
-        len(s["enabled_found"]) for s in score_list)
-    agg["disabled_count_mean"] = statistics.mean(
-        len(s["disabled_found"]) for s in score_list)
-    agg["species_violations_mean"] = statistics.mean(
-        len(s["species_violations"]) for s in score_list)
-    agg["conflict_violations_mean"] = statistics.mean(
-        len(s["conflict_violations"]) for s in score_list)
+    agg["enabled_count_mean"] = statistics.mean(len(s["enabled_found"]) for s in ok)
+    agg["disabled_count_mean"] = statistics.mean(len(s["disabled_found"]) for s in ok)
+    agg["species_violations_mean"] = statistics.mean(len(s["species_violations"]) for s in ok)
+    agg["conflict_violations_mean"] = statistics.mean(len(s["conflict_violations"]) for s in ok)
 
-    # Use case accuracy across runs: fraction correct
-    uc_correct_count = sum(1 for s in score_list if s.get("use_case_correct", False))
-    agg["use_case_correct"] = uc_correct_count > len(score_list) / 2  # majority
-    agg["use_case_correct_rate"] = uc_correct_count / len(score_list)
+    # Use case accuracy across runs: majority vote for the boolean, plus the raw fraction-correct.
+    uc_correct_count = sum(1 for s in ok if s.get("use_case_correct", False))
+    agg["use_case_correct"] = uc_correct_count > len(ok) / 2  # majority
+    agg["use_case_correct_rate"] = uc_correct_count / len(ok)
 
     return agg
 
@@ -359,7 +515,7 @@ def aggregate_scores(score_list):
 # ---------------------------------------------------------------------------
 
 def _fmt_use_case(score_dict, gt_category):
-    """Format use case detected cell for report table."""
+    """Format use case detected cell for report table. (gt_category is currently unused — dead param.)"""
     uc = score_dict.get("use_case_detected", "unknown")
     # Multi-run: show accuracy rate if available
     if "use_case_correct_rate" in score_dict:
@@ -382,8 +538,10 @@ def _fmt_citation(score_dict, num_runs=1):
 
 
 def _fmt_metric(score_dict, key, num_runs):
-    """Format a numeric metric, showing ± std when multi-run."""
-    val = score_dict[key]
+    """Format a numeric metric, showing ± std when multi-run. 'n/a' when the metric is undefined (None)."""
+    val = score_dict.get(key)
+    if val is None:
+        return "n/a"
     if num_runs > 1 and key + "_std" in score_dict:
         std = score_dict[key + "_std"]
         return f"{val:.0%} \u00b1 {std:.0%}"
@@ -415,7 +573,15 @@ def generate_report(all_results):
         conditions.append(("with_kb_semantic", "With KB (semantic)"))
 
     def _get(r, key):
-        """Get condition data with fallback to without_kb."""
+        """Get condition data with fallback to without_kb.
+
+        CAVEAT (silent substitution): if a query is MISSING this condition (a partial/failed run, or a
+        hand-merged result set), this returns the BARE (without_kb) numbers — so that query's column shows
+        bare values as if they were this condition's, and its delta-vs-bare collapses to 0, hiding the
+        asymmetry instead of flagging it. Harmless in a clean uniform run (every query has every condition);
+        a missing-condition guard that warns/raises would be safer. (Same pattern recurs in main's terminal
+        summary via r.get("with_kb_all", r["without_kb"]).)
+        """
         return r.get(key, r["without_kb"])
 
     # --- Header ---
@@ -429,7 +595,7 @@ def generate_report(all_results):
         lines.append(f"**Runs per configuration:** {num_runs}")
         lines.append(f"**Seeds:** {seeds}")
     lines.append(f"**Temperature:** {temperature}")
-    lines.append(f"**Max tokens:** 4096")
+    lines.append(f"**Max tokens:** {_MAX_TOKENS}")
     lines.append(f"**Evaluation mode:** Leave-one-out (ground truth example excluded from retrieval corpus)")
     lines.append("")
 
@@ -437,8 +603,10 @@ def generate_report(all_results):
     lines.append("## Per-Query Results\n")
 
     pq_metric_keys = ["enable_precision", "enable_recall", "enable_f1",
+                      "enable_f1_weighted",
                       "disable_precision", "disable_recall", "disable_f1"]
     pq_metric_labels = ["Enable precision", "Enable recall", "Enable F1",
+                        "Enable F1 (priority-weighted)",
                         "Disable precision", "Disable recall", "Disable F1"]
 
     for r in all_results["queries"]:
@@ -503,8 +671,10 @@ def generate_report(all_results):
     lines.append("## Summary\n")
     n = len(all_results["queries"])
 
-    sum_metric_keys = ["enable_f1", "disable_f1", "enable_precision", "enable_recall"]
-    sum_metric_labels = ["Enable F1", "Disable F1", "Enable Precision", "Enable Recall"]
+    sum_metric_keys = ["enable_f1", "enable_f1_weighted", "disable_f1",
+                       "enable_precision", "enable_recall"]
+    sum_metric_labels = ["Enable F1", "Enable F1 (priority-weighted)", "Disable F1",
+                         "Enable Precision", "Enable Recall"]
 
     # Build header: condition columns + delta columns
     header_cells = []
@@ -518,27 +688,36 @@ def generate_report(all_results):
     lines.append("|--------" + "|---" * len(header_cells) + "|")
 
     for label, metric in zip(sum_metric_labels, sum_metric_keys):
-        avgs = {}
-        for key, _ in conditions:
-            avgs[key] = sum(_get(r, key)[metric] for r in all_results["queries"]) / n
-        cells = [f"{avgs[key]:.0%}" for key, _ in conditions]
+        # _safe_mean skips queries where this metric is undefined (None); _pct/_pct_delta render 'n/a'.
+        avgs = {key: _safe_mean([_get(r, key)[metric] for r in all_results["queries"]])
+                for key, _ in conditions}
+        cells = [_pct(avgs[key]) for key, _ in conditions]
         for key, _ in conditions[1:]:
-            delta = avgs[key] - avgs["without_kb"]
-            cells.append(f"{delta:+.0%}")
+            cells.append(_pct_delta(avgs[key], avgs["without_kb"]))
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
 
-    # Violation totals
+    # Violation totals.
+    # FIX (multi-run consistency): sum the per-run MEAN counts (e.g. species_violations_mean) so this total
+    # matches the per-query table above. Previously it summed len() of the aggregate's stored violation
+    # SET, which aggregate_scores fills with the LAST run only -> in a 3-run eval the per-query rows showed
+    # the mean while this "total" reflected run 3 alone, and the two could disagree. Falls back to the set
+    # length for single-run. ('%g' formats the now-possibly-fractional totals/deltas without crashing.)
     for viol_key, viol_label in [("species_violations", "Species violations (total)"),
                                   ("conflict_violations", "Conflict violations (total)")]:
         totals = {}
         for key, _ in conditions:
-            totals[key] = sum(len(_get(r, key)[viol_key]) for r in all_results["queries"])
-        cells = [str(totals[key]) for key, _ in conditions]
+            totals[key] = sum(_get(r, key).get(viol_key + "_mean", len(_get(r, key)[viol_key]))
+                              for r in all_results["queries"])
+        cells = [f"{totals[key]:g}" for key, _ in conditions]
         for key, _ in conditions[1:]:
-            cells.append(f"{totals[key] - totals['without_kb']:+d}")
+            cells.append(f"{totals[key] - totals['without_kb']:+g}")
         lines.append(f"| {viol_label} | " + " | ".join(cells) + " |")
 
-    # Use case accuracy
+    # Use case accuracy.
+    # CAVEAT (inherited): rides on extract_use_case (fuzzy whole-response scrape — logged misclassifications)
+    # and the macro-averages here inherit score_response's 0-not-None bias. The "Citation rate (avg)" row
+    # below rides on the DEPRECATED measure_citation_rate (deflated; see EXPERIMENTS.md 'Metric deprecation').
+    # Both rows are exactly as unreliable as those underlying functions; structured output retires them.
     uc_totals = {}
     for key, _ in conditions:
         uc_totals[key] = sum(1 for r in all_results["queries"] if _get(r, key).get("use_case_correct"))
@@ -548,12 +727,11 @@ def generate_report(all_results):
     lines.append("| Use case accuracy | " + " | ".join(cells) + " |")
 
     # Citation rate
-    cit_avgs = {}
-    for key, _ in conditions:
-        cit_avgs[key] = sum(_get(r, key).get("citation_rate", 0) for r in all_results["queries"]) / n
-    cells = [f"{cit_avgs[key]:.0%}" for key, _ in conditions]
+    cit_avgs = {key: _safe_mean([_get(r, key).get("citation_rate") for r in all_results["queries"]])
+                for key, _ in conditions}
+    cells = [_pct(cit_avgs[key]) for key, _ in conditions]
     for key, _ in conditions[1:]:
-        cells.append(f"{cit_avgs[key] - cit_avgs['without_kb']:+.0%}")
+        cells.append(_pct_delta(cit_avgs[key], cit_avgs["without_kb"]))
     lines.append("| Citation rate (avg) | " + " | ".join(cells) + " |")
 
     lines.append("")
@@ -573,10 +751,17 @@ def _run_condition(client, model, system_prompt, query, option_aliases,
         resp = call_llm(client, model, system_prompt, query,
                         temperature=temperature, seed=seed)
         en, dis = extract_recommendations(resp, option_aliases)
-        score = score_response(en, dis, gt_enabled, gt_disabled, vep_options, query)
+        score = score_response(en, dis, gt_enabled, gt_disabled, vep_options, query,
+                               gt_category=gt_category)
     except Exception as e:
+        # CAVEAT: an infra failure (timeout/OOM) is scored as all-zero here (empty enable/disable sets ->
+        # 0 across every metric; resp="" -> use case "unknown", citation 0) and then AVERAGED IN, so it is
+        # indistinguishable from "the model got everything wrong" and silently drags the means down. The
+        # `_errored` marker below lets a consumer count/exclude these failed calls (none currently does).
         print(f"ERROR: {e}")
-        score = score_response(set(), set(), gt_enabled, gt_disabled, vep_options, query)
+        score = score_response(set(), set(), gt_enabled, gt_disabled, vep_options, query,
+                               gt_category=gt_category)
+        score["_errored"] = True
 
     # Interpretability metrics
     detected_uc = extract_use_case(resp)
@@ -586,6 +771,7 @@ def _run_condition(client, model, system_prompt, query, option_aliases,
     score["citation_rate"] = cit_rate
     score["citations_found"] = cit_found
     score["total_recommendations"] = cit_total
+    score["_response"] = resp        # raw text, for re-scoring after parser/metric changes
     return score
 
 
@@ -596,11 +782,13 @@ def main():
     parser.add_argument("--semantic", action="store_true",
                         help="Include semantic retrieval condition in evaluation")
     parser.add_argument("--all-examples", action="store_true",
-                        help="Include 'all examples' condition (no retrieval, all 8 examples)")
+                        help="Include 'all examples' condition (no retrieval, all training examples)")
     parser.add_argument("--runs", type=int, default=1,
                         help="Number of evaluation runs per configuration (default: 1)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed for reproducibility (default: 42)")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Sampling temperature (default: 0.7; use 0.0 for deterministic/greedy)")
     args = parser.parse_args()
 
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
@@ -609,7 +797,7 @@ def main():
     use_all_examples = args.all_examples
     num_runs = args.runs
     base_seed = args.seed
-    temperature = 0.7
+    temperature = args.temperature
 
     num_conditions = 2 + int(use_all_examples) + int(use_semantic)
     total_calls = len(TEST_QUERIES) * num_conditions * num_runs
@@ -698,7 +886,7 @@ def main():
                 gt_enabled, gt_disabled, gt_category, vep_options,
                 temperature, current_seed, "keyword",
             )
-            print(f"done (F1={score_w['enable_f1']:.0%})")
+            print(f"done (F1={_pct(score_w['enable_f1'])})")   # _pct: enable_f1 is None on empty/errored output
             run_scores_w.append(score_w)
 
             # --- Without KB ---
@@ -708,7 +896,7 @@ def main():
                 gt_enabled, gt_disabled, gt_category, vep_options,
                 temperature, current_seed, "bare",
             )
-            print(f"done (F1={score_wo['enable_f1']:.0%})")
+            print(f"done (F1={_pct(score_wo['enable_f1'])})")
             run_scores_wo.append(score_wo)
 
             # --- With KB (all examples) ---
@@ -719,7 +907,7 @@ def main():
                     gt_enabled, gt_disabled, gt_category, vep_options,
                     temperature, current_seed, "all",
                 )
-                print(f"done (F1={score_a['enable_f1']:.0%})")
+                print(f"done (F1={_pct(score_a['enable_f1'])})")
                 run_scores_all.append(score_a)
 
             # --- With KB (semantic) ---
@@ -730,7 +918,7 @@ def main():
                     gt_enabled, gt_disabled, gt_category, vep_options,
                     temperature, current_seed, "semantic",
                 )
-                print(f"done (F1={score_s['enable_f1']:.0%})")
+                print(f"done (F1={_pct(score_s['enable_f1'])})")
                 run_scores_s.append(score_s)
 
         # Aggregate across runs
@@ -755,26 +943,30 @@ def main():
     # Generate and save report
     report = generate_report(all_results)
 
-    results_dir = BASE_DIR / "results"
-    results_dir.mkdir(exist_ok=True)
+    results_dir = Path(os.environ.get("VEP_RESULTS_DIR", BASE_DIR / "results"))
+    results_dir.mkdir(parents=True, exist_ok=True)
     safe_model = model.replace("/", "_").replace(":", "_")
     out_path = results_dir / f"evaluation_results_{safe_model}.md"
     with open(out_path, "w") as f:
         f.write(report)
     print(f"Report saved to: {out_path}")
 
-    # Print summary to terminal
+    # Print summary to terminal.
+    # NOTE: this terminal line headlines the UNWEIGHTED enable_f1 (emphasis only — the saved .md report
+    # shows both unweighted and priority-weighted). The project's stated headline is the weighted metric, so
+    # prefer the .md report / enable_recall_weighted. (Also: the r.get("with_kb_all", r["without_kb"]) calls
+    # below are the same silent bare-substitution as _get — a missing 'all'/'semantic' condition reads as bare.)
     print("\n" + "=" * 60)
     n = len(all_results["queries"])
-    avg_f1_w = sum(r["with_kb"]["enable_f1"] for r in all_results["queries"]) / n
-    avg_f1_wo = sum(r["without_kb"]["enable_f1"] for r in all_results["queries"]) / n
+    avg_f1_w = _safe_mean([r["with_kb"]["enable_f1"] for r in all_results["queries"]]) or 0   # None-safe terminal line
+    avg_f1_wo = _safe_mean([r["without_kb"]["enable_f1"] for r in all_results["queries"]]) or 0
     summary = f"  Enable F1 — With KB (kw): {avg_f1_w:.0%}  |  Without KB: {avg_f1_wo:.0%}  |  \u0394: {avg_f1_w - avg_f1_wo:+.0%}"
     if use_all_examples:
-        avg_f1_a = sum(r.get("with_kb_all", r["without_kb"])["enable_f1"] for r in all_results["queries"]) / n
+        avg_f1_a = _safe_mean([r.get("with_kb_all", r["without_kb"])["enable_f1"] for r in all_results["queries"]]) or 0
         summary += f"\n  Enable F1 — With KB (all): {avg_f1_a:.0%}  |  \u0394 vs bare: {avg_f1_a - avg_f1_wo:+.0%}  |  \u0394 vs kw: {avg_f1_a - avg_f1_w:+.0%}"
     if use_semantic:
-        avg_f1_s = sum(r.get("with_kb_semantic", r["without_kb"])["enable_f1"] for r in all_results["queries"]) / n
-        summary += f"\n  Enable F1 — With KB (sem): {avg_f1_s:.0%}  |  Δ vs bare: {avg_f1_s - avg_f1_wo:+.0%}  |  Δ vs kw: {avg_f1_s - avg_f1_w:+.0%}"
+        avg_f1_s = _safe_mean([r.get("with_kb_semantic", r["without_kb"])["enable_f1"] for r in all_results["queries"]])
+        summary += f"\n  Enable F1 — With KB (sem): {_pct(avg_f1_s)}  |  Δ vs bare: {_pct_delta(avg_f1_s, avg_f1_wo)}  |  Δ vs kw: {_pct_delta(avg_f1_s, avg_f1_w)}"
     print(summary)
     print("=" * 60)
 

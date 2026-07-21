@@ -49,12 +49,14 @@
         "enabled": true
       },
       "alphamissense": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Optional extra missense predictor; SIFT/PolyPhen/CADD are the standard set"
       },
       "revel": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Optional extra missense predictor; SIFT/PolyPhen/CADD are the standard set"
       },
       "clinvar": {
         "value": true,
@@ -75,8 +77,9 @@
         "note": "gnomAD is more comprehensive"
       },
       "spliceai": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Splice prediction covered by the splice-focused workflow; not needed for general coding screening"
       },
       "hgvs": {
         "value": true,
@@ -766,52 +769,59 @@
         "enabled": true
       },
       "mane_select": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Default transcript is sufficient for a known-variant lookup"
       },
       "canonical": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Not needed for a single-variant lookup"
       },
       "pick": {
-        "value": true,
-        "enabled": true,
-        "note": "Single variant lookup \u2014 one consequence is sufficient"
+        "value": false,
+        "enabled": false,
+        "note": "Not needed; a single known variant yields few consequences"
       },
       "per_gene": {
         "value": false,
         "enabled": false,
-        "note": "Using --pick instead; single variant unlikely to span multiple genes"
+        "note": "Not needed for a single variant"
       },
       "most_severe": {
         "value": false,
         "enabled": false,
-        "note": "Want SIFT/PolyPhen scores which most_severe suppresses"
+        "note": "Want the actual annotation, not just severity"
       },
       "summary": {
         "value": false,
         "enabled": false,
-        "note": "Want detailed annotation, not just consequence types"
+        "note": "Want detailed annotation, not a summary"
       },
       "sift": {
-        "value": "both (prediction + score)",
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "In-silico predictors aren't needed to look up a known, clinically-annotated variant"
       },
       "polyphen": {
-        "value": "both (prediction + score)",
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "In-silico predictors aren't needed to look up a known, clinically-annotated variant"
       },
       "cadd": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Not needed for a known-variant lookup"
       },
       "alphamissense": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Not needed for a known-variant lookup"
       },
       "revel": {
         "value": false,
-        "enabled": false
+        "enabled": false,
+        "note": "Not needed for a known-variant lookup"
       },
       "clinvar": {
         "value": true,
@@ -822,16 +832,19 @@
         "enabled": true
       },
       "gnomad_af": {
-        "value": "gnomAD exome",
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Frequency not needed to identify the variant; ClinVar gives clinical relevance"
       },
       "af_1kg": {
         "value": false,
-        "enabled": false
+        "enabled": false,
+        "note": "Frequency not needed for a quick lookup"
       },
       "spliceai": {
         "value": false,
-        "enabled": false
+        "enabled": false,
+        "note": "Splice prediction not needed for a quick lookup"
       },
       "hgvs": {
         "value": true,
@@ -844,25 +857,27 @@
       "protein": {
         "value": false,
         "enabled": false,
-        "note": "Overkill for a quick lookup; HGVS is sufficient"
+        "note": "Overkill for a quick lookup; HGVS + symbol suffice"
       },
       "domains": {
         "value": false,
-        "enabled": false
+        "enabled": false,
+        "note": "Not needed for a quick lookup"
       },
       "gene_phenotype": {
-        "value": true,
-        "enabled": true
+        "value": false,
+        "enabled": false,
+        "note": "Gene-level phenotype not needed for a single-variant lookup"
       },
       "regulatory": {
         "value": false,
         "enabled": false,
-        "note": "Overkill for a single variant lookup"
+        "note": "Not needed for a single-variant lookup"
       },
       "maxentscan": {
         "value": false,
         "enabled": false,
-        "note": "Not needed unless specifically investigating splice-site variants"
+        "note": "Splice prediction not needed for a quick lookup"
       },
       "clinvar_sv": {
         "value": false,
@@ -875,7 +890,7 @@
         "note": "Only relevant for structural variant analysis"
       }
     },
-    "justification": "For a quick single-variant lookup, defaults plus basic pathogenicity annotation is appropriate. Use --pick to get a single clean result rather than multiple transcript annotations. SIFT, PolyPhen, CADD, and AlphaMissense give a quick pathogenicity assessment. ClinVar shows if it has known clinical significance. gnomAD shows population frequency. HGVS and gene symbol make the result immediately readable. No need for regulatory annotations, splicing predictors, or extensive frequency data for a single rsID lookup."
+    "justification": "A quick single-variant (rsID) lookup needs only to resolve the variant (check_existing), its gene (symbol), HGVS nomenclature, and clinical significance (ClinVar). In-silico predictors, frequency panels, and regulatory/structural annotations are unnecessary for identifying a known, annotated variant."
   },
   {
     "id": "non_human_mouse",
