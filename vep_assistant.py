@@ -124,7 +124,7 @@ def load_factors():
 # about what a scenario's priorities are. `work/generation/seed_priorities.py` imports it back out.
 #
 # WHY IT IS DERIVED AND NOT A MAINTAINED FILE. The table is a pure function of this spec and the option
-# catalogue, and computing all 58 options takes ~0.02 ms — there is no reason to precompute it. Keeping
+# catalogue, and computing all 65 options takes ~0.02 ms — there is no reason to precompute it. Keeping
 # it as a generated artifact meant four copies of it existed across two trees, kept in step by hand, with
 # nothing to notice when they drifted: edit the catalogue and forget to regenerate, and the shipped tool
 # silently ran an older table than every measurement was taken on. Deriving it removes that class of bug
@@ -152,7 +152,11 @@ SPLICE_ADDON = ["maxentscan", "dbscsnv"]   # maxentscan is the ONLY all-species 
 # rates 9/10 regulatory_noncoding=not_applicable. CADD is the documented exception (it scores coding AND
 # non-coding) and is deliberately absent from this list.
 MISSENSE_ONLY = [p for p in PREDICTOR_DISTINCT + PREDICTOR_DERIVATIVE if p != "cadd"]
-REGION_GATE_NONCODING = MISSENSE_ONLY + ["mutfunc", "paralogues", "mane", "protein", "nmd"]
+# `symbol` is in BASELINE_RECOMMENDED, so it went out on every purely regulatory query. Regulatory
+# features carry Ensembl regulatory IDs, not gene symbols (Likhitha, 2026-08-15), so the column is
+# empty for the thing such a query is annotating. Gated rather than demoted: the gate fires only when
+# EVERY active region value rules it out, so a coding+regulatory query keeps it.
+REGION_GATE_NONCODING = MISSENSE_ONLY + ["mutfunc", "paralogues", "mane", "protein", "nmd", "symbol"]
 
 # WHERE-vs-WHY discipline: taxonomy_proposal §3 split region_focus from analysis_goal precisely because a
 # single axis mixed *where* the variant acts with *why* you are annotating. So region_focus drives the
@@ -164,14 +168,20 @@ DRIVES = {
         "coding": {
             # tsl/appris are web_default=on, so ranking them optional would recommend LESS than the form
             # already gives. protein/nmd sit at optional in the catalogue's own columns.
-            "recommended": ["hgvs", "numbers", "cat:protein_annotation", "tsl", "appris"],
-            "optional": ["protein", "uniprot", "ccds", "nmd", "coding_only"],
+            # protein promoted per her rows 2/8/9: "protein should be recommended because this is a
+            # protein coding question".
+            "recommended": ["hgvs", "numbers", "cat:protein_annotation", "tsl", "appris", "protein"],
+            "optional": ["uniprot", "ccds", "nmd", "coding_only"],
         },
         "regulatory-noncoding": {
             # The regulatory build IS the annotation a regulatory query asks for; without it the question
             # is unanswerable, not merely under-served.
             "critical": ["regulatory"],
-            "recommended": ["cell_type", "utrannotator", "enformer", "mirna"],
+            # cell_type, mirna and enformer demoted per her rows 1/3/4/5/6/7/9: cell_type restricts
+            # regulatory annotation to particular cell types, mirna is miRNA secondary structure.
+            # Specialised rather than standard, so offered rather than switched on.
+            "recommended": ["utrannotator"],
+            "optional": ["cell_type", "enformer", "mirna"],
             "not_applicable": REGION_GATE_NONCODING,
         },
     },
@@ -179,10 +189,17 @@ DRIVES = {
         "basic-consequence": {"optional": ["most_severe", "hgvs"]},
         "clinical-interpretation": {
             "critical": ["clinvar", "hgvs", "mane"],
-            "recommended": PREDICTOR_DISTINCT + SPLICE_CORE + ["phenotypes"],
-            "optional": PREDICTOR_DERIVATIVE + SPLICE_ADDON + ["mastermind", "geno2mp", "loeuf",
+            # mavedb: measured functional evidence rather than prediction. It had NO positive priority
+            # anywhere, so it could not appear in any configuration (0 of 31 rows). Likhitha and Jamie
+            # asked for it independently. Its size gate lives in the catalogue, which had no
+            # structural_variants key at all.
+            # mastermind: promoted from optional per her row-5 note, "adds useful literature evidence".
+            "recommended": PREDICTOR_DISTINCT + SPLICE_CORE + ["phenotypes", "mavedb", "mastermind"],
+            # `failed` dropped entirely per her rows 1/3/5: it includes variants flagged as failing QC,
+            # so offering it as an add-on invites someone to switch on known-bad calls.
+            "optional": PREDICTOR_DERIVATIVE + SPLICE_ADDON + ["geno2mp", "loeuf",
                                                               "dosage_sensitivity", "pubmed",
-                                                              "var_synonyms", "failed",
+                                                              "var_synonyms",
                                                               "mutfunc", "paralogues"],
         },
         "population-frequency": {
@@ -194,11 +211,18 @@ DRIVES = {
     "origin": {
         # Origin modulates which co-located source matters; it does not independently add ClinVar.
         # Composition is max-only, so listing clinvar here forced it into EVERY germline query.
-        "germline": {"recommended": ["check_existing"]},
-        "somatic": {"recommended": ["check_existing"], "not_applicable": ["frequency"]},
+        # check_existing demoted to an add-on per her rows 2/4/5/7/9/10: "finding known matches isn't
+        # necessary for such a simple analysis/question". It still returns automatically wherever
+        # ClinVar is switched on, because ClinVar depends on it and the dependency pass restores it.
+        "germline": {"optional": ["check_existing"]},
+        "somatic": {"optional": ["check_existing"], "not_applicable": ["frequency"]},
     },
     "variant_size_class": {
-        "structural-CNV": {"critical": ["gnomad_sv"], "recommended": ["dosage_sensitivity"]},
+        # loeuf added per Likhitha 2026-08-15. Gene-level constraint is the evidence for a deletion
+        # spanning a gene, where there is no per-variant score to have. It had no size rule at all,
+        # so clinical-interpretation:optional was the only thing raising it and it never reached
+        # RECOMMENDED on an SV row.
+        "structural-CNV": {"critical": ["gnomad_sv"], "recommended": ["dosage_sensitivity", "loeuf"]},
     },
     "species": {
         # canonical is web_default=off and its own when_not_to_use prefers MANE for human clinical work.
@@ -787,9 +811,9 @@ def infer_factors(client, model, user_query, think=False, apply_defaults=True,
 #
 # A factor the question never mentions contributes NOTHING, so every option it would have supplied
 # disappears silently. Measured over the 31 review rows, mean options lost when one factor is blanked:
-# origin 1.0, variant_size_class 1.0, region_focus 4.4, analysis_goal 5.4 (worst row 17). Over 20 REAL
-# forum questions, 18/20 leave at least one factor open that changes the configuration — the generated
-# rows never show this because Stage 3 wrote them to express their tuple (all 31 are fully specified).
+# origin 1.0, variant_size_class 1.0, region_focus 4.4, analysis_goal 5.4 (worst row 17). The generated
+# rows never show the problem directly, because Stage 3 wrote them to express their tuple — all 31 are
+# fully specified, which is what makes the controlled ablations in `ablate_queries.py` necessary.
 #
 # A default is only safe where one answer is rarely harmful, which is not everywhere:
 #   origin              guessing germline on a tumour sample can switch ON the common-variant filter,
@@ -979,8 +1003,8 @@ def factor_impact(factor, factor_tuple, vep_options):
     """How much the configuration would move if this factor were answered — the largest difference
     between any two candidate answers. THE DECISION TO ASK IS DETERMINISTIC, not a model judgement:
     a factor whose answer changes nothing is not worth a question, whatever the classifier felt about it.
-    On the 20 real queries this suppressed all 16 `origin` questions; asking on model uncertainty alone
-    would have raised 52 questions, 16 of them about the factor that matters least."""
+    Asking on model uncertainty instead would raise a question wherever the classifier felt unsure,
+    which is not the same thing as the answer mattering."""
     try:
         values = load_factors()["factors"][factor]["values"]
     except Exception:
@@ -1232,7 +1256,7 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
 
     The default is "state" rather than "ask" because a tool that interrogates its users has moved the
     work back onto them. Asking is opt-in. `analysis_goal` and ASSEMBLY are the two things asked about;
-    every other factor has a safe value and reaches no question. Over the 81 clean ablations that is 44
+    every other factor has a safe value and reaches no question. Over the 78 clean ablations that is 44
     questions on 38 queries, 33 of them assembly (`work/harness/ask_rate.py`).
 
     Do not cite "18 of 20 real forum questions" from anywhere: that set was hand-edited and is withdrawn
@@ -3435,13 +3459,14 @@ def run_explain_result(client, model, user_query):
 
 def main():
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-    # Default to the model this system is actually built and benchmarked on. It was qwen2.5:3b, chosen
-    # when the demo just needed something small — but 3B cannot hold the `✓/✗ ... [source: id]` output
-    # contract the whole pipeline depends on. It frequently emits no [source:] tags at all, which drops the
-    # parser into its prose fallback (built for the no-KB experimental condition), and that fallback
-    # inverts the model: "✗ polyphen: ON" parses as ENABLE. Exp 1/10 measure 3B at 31-39% enable-F1, the
-    # worst of every model tested, vs 84% for gemma4:26b. Shipping it as the default made the demo's first
-    # impression the system's worst configuration.
+    # gemma4:26b — the model this system is built and benchmarked on (Exp 10: 84% enable-F1).
+    #
+    # The default matters more than it looks. A 3B-class model cannot hold the `✓/✗ ... [source: id]`
+    # output contract the whole pipeline depends on: it frequently emits no [source:] tags at all, which
+    # drops the parser into its prose fallback (built for the no-KB experimental condition), and that
+    # fallback INVERTS the meaning — "✗ polyphen: ON" parses as ENABLE. Exp 1/10 measure 3B-class models
+    # at 31-39% enable-F1, the worst of everything tested. A small default would make a first impression
+    # out of the system's worst configuration.
     model = os.environ.get("VEP_MODEL", "gemma4:26b")
     client = OpenAI(base_url=base_url, api_key="ollama")
 
@@ -3459,6 +3484,29 @@ def main():
     # --- Mode: recommend (with optional --explain, --no-check, --semantic) ---
     known_flags = ("--explain", "--no-check", "--semantic", "--minimal", "--full", "--think",
                    "--factor-think", "--assume", "--ask") + tuple(_CONTEXT_FLAGS)
+
+    # --help is the first thing anyone types, and rejecting it with "Unknown option(s): --help" (exit 2)
+    # is a poor greeting for someone who just cloned the repo. Handled before the unknown-flag check.
+    if any(a in ("--help", "-h", "help") for a in args):
+        print('Usage: python vep_assistant.py [flags] "your analysis scenario"')
+        print("\nModes:")
+        print("  <scenario>                    recommend a VEP web-form configuration")
+        print('  explain-result "<question>"   explain a VEP output annotation')
+        print("\nFlags:")
+        for f, h in (("--explain", "show the decision trace and retrieval scores"),
+                     ("--minimal", "smallest runnable configuration"),
+                     ("--full", "add every add-on"),
+                     ("--semantic", "BGE embedding retrieval instead of keyword"),
+                     ("--think", "let the recommender reason first (~2x slower, no measured gain)"),
+                     ("--factor-think", "let the factor classifier reason first"),
+                     ("--assume", "apply the safe defaults silently"),
+                     ("--ask", "prompt when a gap changes something in RECOMMENDED"),
+                     ("--no-check", "skip the constraint checker (not advised)"),
+                     ("--species / --origin / --size / --assembly", "state a fact instead of inferring it")):
+            print(f"  {f:<44} {h}")
+        print("\nEnvironment: VEP_MODEL (default gemma4:26b), VEP_FACTOR_MODEL, VEP_OPTIONS_FILE,")
+        print("             VEP_EXAMPLES_FILE, NO_PROXY=localhost,127.0.0.1 if a proxy is set.")
+        sys.exit(0)
 
     # A mistyped flag used to fall through into the query text: `--minmal "mouse variants"` asked the
     # model about "--minmal mouse variants" and quietly ran at the default level. Reject anything
