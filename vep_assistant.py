@@ -30,11 +30,10 @@ import time
 import datetime
 from pathlib import Path
 
-try:
-    from openai import OpenAI
-except ImportError:
-    print("Error: openai SDK not installed. Run: pip install openai")
-    sys.exit(1)
+# The openai SDK is imported LAZILY, in main(), because it is needed in exactly one place — the client
+# built for the recommender call. Importing it here made the SDK a hard requirement of merely importing
+# this module, which six deterministic harnesses do purely to read the priority table. They need no
+# model, no network and no SDK, and a missing dependency killed the process at import rather than at use.
 
 BASE_DIR = Path(__file__).parent
 
@@ -70,12 +69,12 @@ def load_knowledge_base():
     options_path = _kb_path("VEP_OPTIONS_FILE", "work/vep_options_expanded.json", "vep_options.json")
     examples_path = Path(os.environ.get("VEP_EXAMPLES_FILE", BASE_DIR / "training_examples.json"))
 
+    # RAISE, do not exit. Seven harnesses and the web app import this module and call this function;
+    # a hard exit here killed their process instead of letting them report. main() catches and prints.
     if not options_path.exists():
-        print(f"Error: VEP options file not found at {options_path}")
-        sys.exit(1)
+        raise FileNotFoundError(f"VEP options file not found at {options_path}")
     if not examples_path.exists():
-        print(f"Error: Training examples file not found at {examples_path}")
-        sys.exit(1)
+        raise FileNotFoundError(f"Training examples file not found at {examples_path}")
 
     with open(options_path) as f:
         vep_options = json.load(f)
@@ -3468,6 +3467,11 @@ def main():
     # at 31-39% enable-F1, the worst of everything tested. A small default would make a first impression
     # out of the system's worst configuration.
     model = os.environ.get("VEP_MODEL", "gemma4:26b")
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("Error: openai SDK not installed. Run: pip install openai")
+        return 1
     client = OpenAI(base_url=base_url, api_key="ollama")
 
     args = sys.argv[1:]
@@ -3563,7 +3567,11 @@ def main():
             continue
         remaining.append(a)
 
-    vep_options, training_examples = load_knowledge_base()
+    try:
+        vep_options, training_examples = load_knowledge_base()
+    except FileNotFoundError as e:                     # the CLI reports; the library raises
+        print(f"Error: {e}")
+        return 1
 
     if remaining:
         user_query = " ".join(remaining)
@@ -3588,7 +3596,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        # main() RETURNS a status now rather than calling sys.exit itself, so that the library paths it
+        # shares with the harnesses can raise instead of killing the process. Propagate it, or a failed
+        # run exits 0 and any script wrapping the CLI reads that as success.
+        sys.exit(main() or 0)
     except KeyboardInterrupt:
         # A run takes tens of seconds, so Ctrl-C part-way through is expected, not exceptional.
         # Exit quietly with the conventional 130 instead of dumping a traceback.
