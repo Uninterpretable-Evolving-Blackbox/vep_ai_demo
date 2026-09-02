@@ -1,5 +1,5 @@
 {
-  "_catalogue_sha256": "c03a9fc390552c30df0e92d35c0d5863594491896c17c6af731d3c212c39c55d",
+  "_catalogue_sha256": "5c231e5fed532b42a56db62709c41b972de50d79089820cce64199fbecaad63d",
   "_status": "PROVISIONAL \u2014 derived from the DRIVES spec in vep_assistant.py and this catalogue. NOT mentor-validated. A validated table dropped in as priority_by_factor.json overrides this derivation; no code changes are needed.",
   "_authoring": {
     "drives": {
@@ -21,10 +21,8 @@
           ]
         },
         "regulatory-noncoding": {
-          "critical": [
-            "regulatory"
-          ],
           "recommended": [
+            "regulatory",
             "utrannotator"
           ],
           "optional": [
@@ -57,12 +55,10 @@
           ]
         },
         "clinical-interpretation": {
-          "critical": [
+          "recommended": [
             "clinvar",
             "hgvs",
-            "mane"
-          ],
-          "recommended": [
+            "mane",
             "sift",
             "polyphen",
             "cadd",
@@ -89,13 +85,11 @@
           ]
         },
         "population-frequency": {
-          "critical": [
+          "recommended": [
             "af_gnomade",
             "af_gnomadg",
             "af",
-            "af_1kg"
-          ],
-          "recommended": [
+            "af_1kg",
             "frequency"
           ],
           "optional": [
@@ -120,10 +114,8 @@
       },
       "variant_size_class": {
         "structural-CNV": {
-          "critical": [
-            "gnomad_sv"
-          ],
           "recommended": [
+            "gnomad_sv",
             "dosage_sensitivity",
             "loeuf"
           ]
@@ -169,7 +161,7 @@
       ]
     },
     "species_gate": "not_applicable for non-human where _is_human_only(species_restriction), OR where the restriction is a narrow 'human + <one species> only' set that the binary species factor cannot guarantee matches the query's species (var_synonyms=human+pig, ccds=human+mouse)",
-    "size_gate": "catalogue priority_by_use_case['structural_variants'] == 'not_applicable'",
+    "size_gate": "catalogue priority_by_factor['variant_size_class']['structural-CNV'] == 'not_applicable'",
     "region_gate": {
       "value": "regulatory-noncoding",
       "not_applicable": [
@@ -193,46 +185,46 @@
   "priorities": {
     "af": {
       "analysis_goal": {
-        "population-frequency": "critical"
-      },
-      "species": {
-        "non-human": "not_applicable"
+        "population-frequency": "recommended"
       },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "af_1kg": {
       "analysis_goal": {
-        "population-frequency": "critical"
-      },
-      "species": {
-        "non-human": "not_applicable"
+        "population-frequency": "recommended"
       },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "af_gnomade": {
       "analysis_goal": {
-        "population-frequency": "critical"
-      },
-      "species": {
-        "non-human": "not_applicable"
+        "population-frequency": "recommended"
       },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "af_gnomadg": {
       "analysis_goal": {
-        "population-frequency": "critical"
-      },
-      "species": {
-        "non-human": "not_applicable"
+        "population-frequency": "recommended"
       },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "alphamissense": {
@@ -242,11 +234,11 @@
       "analysis_goal": {
         "clinical-interpretation": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "ancestral_allele": {},
@@ -284,11 +276,11 @@
       "region_focus": {
         "coding": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "cell_type": {
@@ -309,16 +301,16 @@
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "clinvar": {
       "analysis_goal": {
-        "clinical-interpretation": "critical",
+        "clinical-interpretation": "recommended",
         "population-frequency": "optional"
       },
       "species": {
@@ -335,9 +327,9 @@
     },
     "core_type": {
       "analysis_goal": {
-        "basic-consequence": "critical",
-        "clinical-interpretation": "critical",
-        "population-frequency": "critical"
+        "basic-consequence": "recommended",
+        "clinical-interpretation": "recommended",
+        "population-frequency": "recommended"
       }
     },
     "dbnsfp": {
@@ -347,22 +339,22 @@
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "dbscsnv": {
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "distance": {},
@@ -389,11 +381,11 @@
       "region_focus": {
         "regulatory-noncoding": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "eve": {
@@ -403,11 +395,11 @@
       "analysis_goal": {
         "clinical-interpretation": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "failed": {},
@@ -426,16 +418,16 @@
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "gnomad_sv": {
       "variant_size_class": {
-        "structural-CNV": "critical"
+        "structural-CNV": "recommended"
       },
       "species": {
         "non-human": "not_applicable"
@@ -452,7 +444,7 @@
       },
       "analysis_goal": {
         "basic-consequence": "optional",
-        "clinical-interpretation": "critical"
+        "clinical-interpretation": "recommended"
       },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
@@ -479,7 +471,7 @@
         "regulatory-noncoding": "not_applicable"
       },
       "analysis_goal": {
-        "clinical-interpretation": "critical"
+        "clinical-interpretation": "recommended"
       },
       "species": {
         "non-human": "not_applicable"
@@ -497,11 +489,11 @@
       "analysis_goal": {
         "clinical-interpretation": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "maxentscan": {
@@ -529,11 +521,11 @@
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "nmd": {
@@ -578,11 +570,11 @@
       "analysis_goal": {
         "clinical-interpretation": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "protein": {
@@ -604,7 +596,7 @@
     },
     "regulatory": {
       "region_focus": {
-        "regulatory-noncoding": "critical"
+        "regulatory-noncoding": "recommended"
       }
     },
     "revel": {
@@ -614,11 +606,11 @@
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "riboseqorfs": {
@@ -645,11 +637,11 @@
       "analysis_goal": {
         "clinical-interpretation": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "summary": {},
@@ -684,22 +676,22 @@
       "region_focus": {
         "regulatory-noncoding": "recommended"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     },
     "var_synonyms": {
       "analysis_goal": {
         "clinical-interpretation": "optional"
       },
-      "species": {
-        "non-human": "not_applicable"
-      },
       "variant_size_class": {
         "structural-CNV": "not_applicable"
+      },
+      "species": {
+        "non-human": "not_applicable"
       }
     }
   }
