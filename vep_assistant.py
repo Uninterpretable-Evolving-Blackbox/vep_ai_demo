@@ -524,7 +524,13 @@ def _form_default_on(oid, vep_options, species):
     opt = next((o for o in vep_options if o["id"] == oid), None)
     if not opt or not opt.get("web_default_on"):
         return False
-    if oid in _HUMAN_ONLY_FORM_DEFAULTS and species not in (None, "human", "unknown"):
+    # Callers pass EITHER the factor value ("human") or the Ensembl production name ("homo_sapiens",
+    # from resolve_species_name). Until 2026-09-15 only the first was recognised, so on every human
+    # query the human-only defaults -- APPRIS, TSL, MANE, ClinVar, PubMed, 1000 Genomes AF -- were
+    # judged NOT already on and printed as recommendations, undoing the mentors' instruction for
+    # exactly the options it covers.
+    is_human = species in (None, "human", "unknown") or str(species).lower().startswith("homo_sapiens")
+    if oid in _HUMAN_ONLY_FORM_DEFAULTS and not is_human:
         return False
     return True
 
@@ -3084,6 +3090,32 @@ _WEB_SECTION_LABELS = {
     "additional_annotations": "Additional annotations", "predictions": "Predictions",
     "filters": "Filtering options", "advanced": "Advanced options"}
 
+# The two sections the form SPLITS into boxes. "Additional annotations" is seven boxes and
+# "Predictions" three, so naming only the section leaves the user opening every box to find one
+# checkbox. For these two the label also names the box, in the form's own words. The other four
+# sections have no boxes, so a second name would only repeat the first.
+_SPLIT_SECTIONS = frozenset({"additional_annotations", "predictions"})
+
+
+def form_location(opt):
+    """Where an option sits on the web form, as the user will see it. Read off the live release-116
+    page on 2026-09-15 -- research/ensembl_docs_116/form_layout_live.json records how each was read.
+
+        MANE          -> "Additional annotations › Transcript annotation"
+        HGVS          -> "Identifiers section"
+        core_type     -> "top of the form, beside the input"
+    """
+    sec = opt.get("web_form_section") or ""
+    if sec == "input":
+        return "top of the form, beside the input"
+    label = _WEB_SECTION_LABELS.get(sec, "")
+    if not label:
+        return ""
+    sub = opt.get("web_form_subsection")
+    if sec in _SPLIT_SECTIONS and sub:
+        return f"{label} › {sub}"
+    return f"{label} section"
+
 
 # TYPES, NOT TOOLS, where several tools answer the same question (round-2 item 11, Likhitha,
 # 2026-09-08): "we should recommend the suite/type of tool by category. (We particularly don't want
@@ -3157,8 +3189,7 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
         # read as internal labels plus flags a web user cannot type anywhere. Web users get the
         # form's own control names and section headings here; every flag now lives only in the CLI
         # block below. `sect_by_id` is the InputForm.pm section, so "where on the form" is answered.
-        sect_by_id = {o["id"]: _WEB_SECTION_LABELS.get(o.get("web_form_section") or "", "")
-                      for o in vep_options}
+        sect_by_id = {o["id"]: form_location(o) for o in vep_options}
         defval_by_id = {o["id"]: o.get("web_default_value") for o in vep_options}
         cat_by_id = {o["id"]: o.get("category") for o in vep_options}
         dep_by_id = {o["id"]: o.get("deprecated") for o in vep_options}
@@ -3182,7 +3213,7 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
                 tag = ("   (add-on)" if oid in extra else
                        "   (model-suggested)"
                        if oid in unpriced else "")
-                where = f"   ({sect_by_id[oid]} section)" if sect_by_id.get(oid) else ""
+                where = f"   ({sect_by_id[oid]})" if sect_by_id.get(oid) else ""
                 dep = (f"   (deprecated — {dep_by_id[oid].split(';')[0]})"
                        if dep_by_id.get(oid) else "")
                 lines.append(f"  {name_by_id.get(oid, oid)}{where}{tag}{dep}")
@@ -3218,7 +3249,7 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
                 if assembly:
                     for_clause += f" ({assembly})"
                 picked = ", ".join(name_by_id.get(o, o) for o in on_members)
-                lines.append(f"  {label}: {picked}" + (f"   ({sect} section)" if sect else ""))
+                lines.append(f"  {label}: {picked}" + (f"   ({sect})" if sect else ""))
                 # The rest of the family, and the "any subset works" caveat, are --explain material:
                 # true, and not what someone filling in the form needs on the screen.
                 if meta_notes:
@@ -3240,7 +3271,7 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
             lines.append("")
             lines.append(f"OPTIONAL  [{len(offered)}]")
             lines.extend((f"  {name_by_id.get(oid, oid)}"
-                          + (f"   ({sect_by_id[oid]} section)" if sect_by_id.get(oid) else "")
+                          + (f"   ({sect_by_id[oid]})" if sect_by_id.get(oid) else "")
                           + (f"   (deprecated — {dep_by_id[oid].split(';')[0]})"
                              if dep_by_id.get(oid) else ""))
                          for oid in offered)
