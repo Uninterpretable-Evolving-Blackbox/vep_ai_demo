@@ -200,8 +200,12 @@ DRIVES = {
         },
     },
     "analysis_goal": {
-        # canonical: recommended wherever MANE is NOT (David, 2026-09-14; Likhitha rows 1/7/10, all
-        # human: "recommended as the fallback transcript when MANE is unavailable"). MANE is raised only
+        # canonical: recommended wherever MANE is NOT. Her rows 1/7/10 verbatim, all human, are
+        # "Recommended should have canonical for fallback tx when MANE isn't available", "The query
+        # mentions reliable transcripts, so add mane and canonical to recommended" and "Add canonical,
+        # mane, overlaps, protein to recommended" -- each CONDITIONAL on the scenario. Extending that
+        # to every tuple is OUR inference, not hers, and David approved the narrower human-clinical
+        # case on 2026-09-14; flag it when the sheet goes out. MANE is raised only
         # under clinical-interpretation and is gated off regulatory rows, so a basic, population-frequency
         # or regulatory query on human had no main-transcript flag at all. canonical exists for every
         # species and every gene. The clinical-interpretation block below also lists it, quoting her
@@ -1459,6 +1463,23 @@ def assembly_question(stated, vep_options, user_query=None, assembly=None):
              sorted(at_stake))]
 
 
+# PLAIN ENGLISH FOR THE CHOICES, not the scheme's own vocabulary. The question sentence below was
+# always readable; the numbered list under it printed the internal value ids -- `basic-consequence`,
+# `regulatory-noncoding` -- which name nothing a first-time user has seen. The ids stay the contract
+# everywhere else; this is the one place a human reads them. Anything unlabelled falls back to the id,
+# so a new factor value degrades to the old behaviour rather than disappearing.
+_FACTOR_VALUE_LABELS = {
+    ("origin", "germline"): "germline — inherited / constitutional",
+    ("origin", "somatic"): "somatic — acquired, e.g. in a tumour",
+    ("variant_size_class", "small"): "small variants — SNVs and indels",
+    ("variant_size_class", "structural-CNV"): "structural variants — SVs and CNVs",
+    ("region_focus", "coding"): "protein-coding regions",
+    ("region_focus", "regulatory-noncoding"): "regulatory / non-coding regions",
+    ("analysis_goal", "basic-consequence"): "a quick consequence call — what does the variant hit?",
+    ("analysis_goal", "clinical-interpretation"): "clinical interpretation — is it pathogenic?",
+    ("analysis_goal", "population-frequency"): "population frequencies — how common is it?",
+}
+
 _FACTOR_PROMPTS = {
     "origin": "Are these variants germline (inherited) or somatic (tumour)?",
     "variant_size_class": "Are these small variants (SNVs/indels) or structural changes (SVs/CNVs)?",
@@ -1480,11 +1501,17 @@ def _ask_factor(factor):
         return None
     if not sys.stdin.isatty():
         return None
+    multi = factor in MULTI_FACTORS
     print(f"\n  {_FACTOR_PROMPTS.get(factor, factor)}")
     for i, v in enumerate(values, 1):
-        print(f"    {i}) {v}")
-    if factor in MULTI_FACTORS:
-        print(f"    {len(values) + 1}) both")
+        print(f"    {i}) {_FACTOR_VALUE_LABELS.get((factor, v), v)}")
+    if multi:
+        # "both" is only English when there are two. analysis_goal has three values, so the old
+        # hardcoded "4) both" asked the user to pick both of three.
+        all_label = {2: "both", 3: "all three"}.get(len(values), f"all {len(values)}")
+        print(f"    {len(values) + 1}) {all_label}")
+        if len(values) > 2:                    # with two values, option 3 already IS "both"
+            print(f"    (or several, e.g. 1,{len(values)})")
     print("    (enter to skip — it will be left open)")
     try:
         raw = input("  > ").strip()
@@ -1493,15 +1520,25 @@ def _ask_factor(factor):
         return None
     if not raw:
         return None
+    # Several at once, for a multi-select factor: "1,3" or "1 3".
+    if multi and any(sep in raw for sep in ",  "):
+        picked = [values[int(t) - 1] for t in raw.replace(",", " ").split()
+                  if t.isdigit() and 1 <= int(t) <= len(values)]
+        if picked:
+            return sorted(set(picked))
     if raw.isdigit():
         n = int(raw)
-        if factor in MULTI_FACTORS and n == len(values) + 1:
+        if multi and n == len(values) + 1:
             return list(values)
         if 1 <= n <= len(values):
-            return [values[n - 1]] if factor in MULTI_FACTORS else values[n - 1]
-    match = [v for v in values if v.lower().startswith(raw.lower())]
+            return [values[n - 1]] if multi else values[n - 1]
+    # Typed text: match the value id or its label, so "clinical" and "somatic" both work.
+    low = raw.lower()
+    match = [v for v in values
+             if v.lower().startswith(low)
+             or _FACTOR_VALUE_LABELS.get((factor, v), "").lower().startswith(low)]
     if len(match) == 1:
-        return [match[0]] if factor in MULTI_FACTORS else match[0]
+        return [match[0]] if multi else match[0]
     return None
 
 
