@@ -3125,11 +3125,18 @@ def form_location(opt):
 # generated command and every scored metric are untouched, because the other half of her item-11
 # question ("what should the accuracy figure become?") is still unanswered, so the tiers underneath
 # must not move yet.
-TYPE_GROUPED_CATEGORIES = {
-    "pathogenicity_prediction": "Pathogenicity predictors",
-    "splice_prediction": "Splice-effect predictors",
-    "literature_citation": "Literature/citation evidence",
-}
+#
+# THE FORM'S BOXES, NOT OUR CATEGORIES (David, 2026-09-15). The lines used to carry labels we wrote --
+# "Pathogenicity predictors", "Splice-effect predictors", "Literature/citation evidence" -- beside the
+# form's own box name in brackets, so the user saw two names for one thing and only one of them was on
+# their screen. Grouping now keys on `web_form_subsection` and the line is labelled with that box.
+#
+# Only the two boxes that are a family of interchangeable tools group. "Literature/citation evidence"
+# is gone: its only member, Mastermind, sits in the form box "Phenotype data and citations" beside
+# Phenotypes, GO and Geno2MP, so labelling it with its box would print that box twice. It now prints as
+# an ordinary line. That changes nothing for item 11 -- a group of one already named the commercial
+# tool -- and whether Mastermind should be recommended at all is a pricing question, not a label.
+TYPE_GROUPED_BOXES = ("Pathogenicity predictions", "Splicing predictions")
 
 
 def format_corrected_config(enabled, disabled, vep_options, violations, resolved=None,
@@ -3191,17 +3198,20 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
         # block below. `sect_by_id` is the InputForm.pm section, so "where on the form" is answered.
         sect_by_id = {o["id"]: form_location(o) for o in vep_options}
         defval_by_id = {o["id"]: o.get("web_default_value") for o in vep_options}
-        cat_by_id = {o["id"]: o.get("category") for o in vep_options}
+        box_by_id = {o["id"]: o.get("web_form_subsection") for o in vep_options}
+        sec_label_by_id = {o["id"]: (f"{_WEB_SECTION_LABELS[o['web_form_section']]} section"
+                                     if o.get("web_form_section") in _WEB_SECTION_LABELS else "")
+                           for o in vep_options}
         dep_by_id = {o["id"]: o.get("deprecated") for o in vep_options}
         unpriced = set(tiers["unpriced"])
         # A grouped member the table prices NOTHING for stays individual: its "model-suggested"
         # warning below matters more than the tidier line, and folding it in would launder a
         # model-only pick into the type's listing.
         grouped_on = {oid for oid in switch_on
-                      if cat_by_id.get(oid) in TYPE_GROUPED_CATEGORIES and oid not in unpriced}
-        grouped_cats = {cat_by_id[oid] for oid in grouped_on}
+                      if box_by_id.get(oid) in TYPE_GROUPED_BOXES and oid not in unpriced}
+        grouped_boxes = {box_by_id[oid] for oid in grouped_on}
         grouped_offered = {oid for oid in tiers["addons_offered"]
-                           if cat_by_id.get(oid) in grouped_cats}
+                           if box_by_id.get(oid) in grouped_boxes}
         if switch_on:
             lines.append(f"RECOMMENDED — set these on the VEP web form  [{len(switch_on)}]")
             for oid in switch_on:
@@ -3236,15 +3246,17 @@ def format_corrected_config(enabled, disabled, vep_options, violations, resolved
                     lines.append(f"      drop-down: {_choice}")
             # One line per TYPE, after the singles. Members switched on are starred; the rest of
             # the type rides on the same line as available, so no member reads as our pick.
-            for cat, label in TYPE_GROUPED_CATEGORIES.items():
+            for box in TYPE_GROUPED_BOXES:
+                label = box                                    # the form's own words
                 on_members = [oid for oid in switch_on if oid in grouped_on
-                              and cat_by_id.get(oid) == cat]
+                              and box_by_id.get(oid) == box]
                 if not on_members:
                     continue
                 off_members = [oid for oid in sorted(tiers["addons_offered"])
-                               if cat_by_id.get(oid) == cat]
-                sect = next((sect_by_id.get(oid) for oid in on_members
-                             if sect_by_id.get(oid)), "")
+                               if box_by_id.get(oid) == box]
+                # The line is already named after the box, so the bracket gives only the section.
+                sect = next((sec_label_by_id.get(oid) for oid in on_members
+                             if sec_label_by_id.get(oid)), "")
                 for_clause = (f" for {species}" if species and species != "unknown" else "")
                 if assembly:
                     for_clause += f" ({assembly})"
