@@ -1373,14 +1373,18 @@ def states_nothing_about_variants(rec):
     return True
 
 
+ASSEMBLY_ASSUMED_WHY = ("the VEP web form serves GRCh38 and directs GRCh37 users to a separate site, so GRCh38 is assumed — say GRCh37 if that is your build")
+
+
 def clarification_plan(rec, vep_options, user_query=None, assembly=None):
     """Given the RAW classification (apply_defaults=False), decide per open factor: assume, or ask.
 
     Returns (filled_tuple, assumptions, questions). `assumptions` are stated to the user rather than
     hidden — the point of this whole mechanism is that the tool stops making invisible choices.
 
-    `questions` may include a non-factor entry for ASSEMBLY, which is scored by the same rule and is
-    the only question the system still raises. It lives here rather than in `resolve_underspecified`
+    ASSEMBLY no longer appears in `questions`: since 2026-09-15 it is assumed (GRCh38) and disclosed
+    like any other filled-in value, so `analysis_goal` is the only question the system still raises.
+    The assembly decision lives here rather than in `resolve_underspecified`
     so that the CLI, the web app and `try_reprompting.py` cannot disagree about what gets asked —
     all three read this function, and only the CLI reads the other one."""
     # The classifier returns None on a parse failure, and that is a normal outcome rather than an
@@ -1422,7 +1426,14 @@ def clarification_plan(rec, vep_options, user_query=None, assembly=None):
     if off_topic:
         scored = []
     else:
-        scored += assembly_question(stated, vep_options, user_query, assembly)
+        # ASSEMBLY IS ASSUMED, NOT ASKED (David, 2026-09-15). `assembly_question` still decides
+        # RELEVANCE -- build already stated, non-human, nothing assembly-restricted at the bar -- and
+        # stays a function because ask_rate monkeypatches it to toggle that arm. Where it used to
+        # raise a question we now fill GRCh38 in and disclose it, for the reason recorded in
+        # resolve_underspecified: the form serves GRCh38 and sends GRCh37 users elsewhere, and the two
+        # wrong guesses are not equal -- GRCh38 costs one ADD-ON, GRCh37 costs four RECOMMENDATIONS.
+        for _f, _why, _at_stake in assembly_question(stated, vep_options, user_query, assembly):
+            assumptions.append(("assembly", "GRCh38", ASSEMBLY_ASSUMED_WHY))
     return rec, assumptions, scored
 
 
@@ -1615,9 +1626,10 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
 
     The default is "state" rather than "ask" because a tool that interrogates its users has moved the
     work back onto them. Asking is opt-in. `analysis_goal` and ASSEMBLY are the two things asked about;
-    every other factor has a safe value and reaches no question. Over the 78 clean ablations that is 46
-    questions on 40 queries, 34 of them assembly (`work/harness/ask_rate.py`, which is the number of
-    record and is enforced in CI). The ablations are the stress test, not the experience: on the 31
+    every other factor has a safe value and reaches no question. Over the 78 clean ablations that is 12
+    questions on 12 queries, all `analysis_goal` (`work/harness/ask_rate.py`, the number of record).
+    It was 46 on 40 until 2026-09-15, when assembly stopped being asked and became a GRCh38
+    assumption: 34 of the 40 were the build. The ablations are the stress test, not the experience: on the 31
     review rows AS WRITTEN it asks nothing on 15, never asks two questions, and never asks about
     `analysis_goal` at all -- the only question that fires is the build, on human rows.
 
@@ -1674,6 +1686,13 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
                                 "without one, so the baseline consequence call is used — say if you "
                                 "are assessing pathogenicity or need population frequencies"))
         questions = [q for q in questions if q[0] != "analysis_goal"]
+
+    # ASSEMBLY. `clarification_plan` has already decided this and recorded it as an assumption; all
+    # that is left here is to put the value in the RETURN, because assembly rides alongside the tuple
+    # rather than in it. The decision and its measurement live there, in one place, so the CLI, the
+    # web app and try_reprompting cannot drift apart.
+    if assembly is None:
+        assembly = next((v for f, v, _w in assumptions if f == "assembly"), None)
 
     if mode != "assume" and (assumptions or questions):
         print()
