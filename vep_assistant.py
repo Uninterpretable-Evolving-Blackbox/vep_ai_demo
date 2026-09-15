@@ -1596,7 +1596,12 @@ def assembly_at_stake(factor_tuple, vep_options):
 
 
 def _ask_assembly():
-    """Put the assembly question. Same contract as `_ask_factor`: skipping is free and never blocks."""
+    """Put the assembly question. Same contract as `_ask_factor`: skipping is free and never blocks.
+
+    CURRENTLY UNREACHABLE (2026-09-15). The build is assumed to be GRCh38 and disclosed, because the
+    form of record serves GRCh38 and sends GRCh37 users to a separate site, and because the two wrong
+    guesses are not equal -- GRCh38 costs one add-on, GRCh37 costs four recommendations. See
+    `clarification_plan`. This stays so that restoring the question is a one-line change there."""
     if not sys.stdin.isatty():
         return None
     print("\n  Which human genome assembly is your data on?")
@@ -1653,6 +1658,10 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
 
     if mode == "ask":
         for factor, _why, _delta in questions:
+            # `_ask_assembly` is UNREACHABLE since 2026-09-15: clarification_plan records the build
+            # as a GRCh38 assumption instead of a question, so "assembly" never enters `questions`
+            # (checked: 0 of 252 tuples). Kept so restoring the question is a one-line change there,
+            # not a rewrite here.
             answer = _ask_assembly() if factor == "assembly" else _ask_factor(factor)
             if answer is None:
                 continue
