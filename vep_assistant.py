@@ -2219,12 +2219,28 @@ _SPECIES_INDEX = None
 
 
 def _species_hint_on():
-    """Whether the species scan is a hint to the classifier rather than an override of it.
+    """Whether the species scan is shown to the classifier as rejectable hints.
 
-    ON BY DEFAULT since 2026-09-14 (VEP_SPECIES_HINT=0 restores the override): model-decides scored
-    14/14 on the adversarial set against the override's 7/14, and the four-factor trap test showed
-    the same shape (model 24/24, override 6/24). The scan stays for RECALL over 356 species names."""
-    return os.environ.get("VEP_SPECIES_HINT", "1") != "0"
+    OFF BY DEFAULT since 2026-09-15 (VEP_SPECIES_HINT=1 turns it back on). It was on for one day, on
+    the strength of 14/14 against the keyword OVERRIDE's 7/14 -- a comparison that was never run
+    against the plain model. Run against the plain model it loses:
+
+        species recall, 60 case-seeds   hinted 60  bare 57     +1  (one distractor case)
+        24 keyword traps                hinted 23  bare 24     -1
+        31 review rows, exact tuple     hinted 21  bare 22     -1
+        species accuracy on those rows  31/31 either way        0
+
+    It never improves the factor it exists for, and it damages a different one. The mechanism: the
+    index carries "human" flagged as an ordinary English word, so the block fires on 30 of the 31
+    rows and appends ~100 words of species disambiguation -- Sonic Hedgehog, Platypus, Turkey, "rabbit
+    hole" -- to queries with no species ambiguity at all. On one row that is enough to push
+    `clinical-interpretation` out of `analysis_goal`, losing CADD, ClinVar, Mastermind and Phenotypes
+    on a query that asked whether a variant is a cancer driver.
+
+    The scan itself is untouched and still available: `infer_species` remains the fallback when the
+    model answers `unstated`, and `species_candidates` still covers all 356 species for anything that
+    wants it."""
+    return os.environ.get("VEP_SPECIES_HINT") == "1"
 
 
 _SPECIES_DATA = None
