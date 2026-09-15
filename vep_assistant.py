@@ -1679,7 +1679,10 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
         print()
         for factor, value, why in assumptions:
             shown = ", ".join(value) if isinstance(value, list) else value
-            print(f"  Assumed {factor} = {shown} — {why}.")
+            # The VALUE, not the argument for it (David, 2026-09-15). The reasoning is still carried
+            # in `assumptions` for --explain and for the JSON; it just stopped being read aloud to
+            # someone who only wants to know what was filled in.
+            print(f"  Assumed {factor} = {shown}")
         for factor, why, at_stake in questions:
             # `at_stake` is the list of must-have ids the answer moves, not a count. Printed as a count
             # once, which rendered as "would change ~['gnomad_sv'] options".
@@ -1687,6 +1690,9 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
             how = "run in a terminal to be prompted" if mode == "ask" else "--ask to be prompted"
             print(f"  Left open: {why} (decides {names}; {how}).")
 
+    # Which factors were filled in rather than read. `_`-prefixed, so active_values and the decision
+    # trace skip it, same convention as _request_type.
+    filled["_assumed"] = sorted(f for f, _v, _w in assumptions)
     return filled, assembly
 
 
@@ -4311,7 +4317,6 @@ def run_recommend(client, model, vep_options, training_examples, user_query,
     # Conflict ranking is UNAFFECTED. `_detect_use_case` retrieves over the examples using the query
     # and its `enabled` parameter is dead, so it never read the draft.
     if single_pass:
-        print("Resolving from the factor tuple (single pass, no draft)...\n")
         response_text, reasoning_text, t_recommend = "", "", 0.0
     else:
         system_prompt = build_system_prompt(vep_options, training_examples, user_query,
@@ -4333,8 +4338,9 @@ def run_recommend(client, model, vep_options, training_examples, user_query,
     # Both phases, so it is never ambiguous which one a slow run was spent in. The two are separately
     # controllable — VEP_FACTOR_THINK for the first, --think for the second — and before this change
     # they were both reasoning, one of them invisibly.
-    print(f"\n[{t_classify:.1f}s reading · {t_recommend:.1f}s analysing · "
-          f"{t_classify + t_recommend:.1f}s total]")
+    if explain:
+        print(f"\n[{t_classify:.1f}s reading · {t_recommend:.1f}s analysing · "
+              f"{t_classify + t_recommend:.1f}s total]")
 
     # --- Post-hoc constraint check + REPAIR ---
     # check_and_fix_violations repairs the option set IN PLACE (drops species/conflict violations,
@@ -4402,9 +4408,10 @@ def run_recommend(client, model, vep_options, training_examples, user_query,
         # in place: sharing them would let pass 1's repairs decide where pass 2 starts.
         passes = size_passes(factor_tuple)
         if len(passes) > 1:
-            print("\nTWO VEP RUNS. This callset holds both variant sizes, and the web form cannot "
-                  "cover both in one configuration — CADD's annotation-file drop-down alone forces the "
-                  "choice. Run VEP once per size, with the settings below.")
+            how = ("both variant sizes assumed"
+                   if "variant_size_class" in (factor_tuple or {}).get("_assumed", [])
+                   else "this callset has both variant sizes")
+            print(f"\nTWO VEP RUNS — {how}. Run VEP once per size, with the settings below.")
         reports = []
         for _i, (size_value, pass_label, pass_tuple) in enumerate(passes, 1):
             # Copies per pass, for the reason above.
