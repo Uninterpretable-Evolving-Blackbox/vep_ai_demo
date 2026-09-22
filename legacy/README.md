@@ -24,6 +24,17 @@ Four things in it describe a system that no longer exists:
 Its headline metric is **enable-F1**, which Exp 20 records as *undefined on the default path* —
 it scored the draft, and there is no draft.
 
+## `training_examples.json` — 23 Claude-written scenarios from June
+
+The in-context corpus for the stage-B draft call: a scenario in prose, a full configuration typed
+out by hand, and one of the seven retired use-case labels. Written by an LLM as a stand-in before
+any gold existed -- the same lineage as the Opus silver set that `EXPERIMENTS.md` withdrew.
+
+The default path never reads it. Only `--two-pass` does, as the draft's examples; with the file
+absent that path runs on an empty corpus (`load_knowledge_base` returns `[]`). The 31 scenarios
+every published number is measured on are a different file, `work/generation/candidates/iced.json`,
+and carry the five factor labels this one predates.
+
 ## `VEP_web_documentation.pdf`
 
 2.4 MB. Ensembl's own web-VEP documentation, downloaded in June 2026 as a reference while the
