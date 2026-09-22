@@ -184,7 +184,7 @@ with less than about 20 GB of free memory; set `VEP_MODEL` to use it.
 | `VEP_OPTIONS_FILE` | (auto) | catalogue override; uses `work/vep_options_expanded.json` when that exists, else the demo file |
 | `VEP_FACTORS_FILE` | (auto) | factor scheme override; uses `work/generation/generation_config/factors.json` when that exists, else `factors.json` |
 | `VEP_PRIORITY_FACTOR_FILE` | (auto) | priority-table override; both default files exist in the repo (written 15 Sept), so the file wins — the derivation from DRIVES + the catalogue is the fallback path |
-| `VEP_EXAMPLES_FILE` | `training_examples.json` | the 23-example file the checker reads for its use-case tie-break (see *Knowledge base*) |
+| `VEP_EXAMPLES_FILE` | `training_examples.json` | the 23 stage-B examples. Read only by `--two-pass` and by `legacy/`; the default path does not use them |
 | `VEP_FACTOR_THINK` | off | classifier reasoning (see `--factor-think` above for the measured effect) |
 | `VEP_SPECIES_HINT` | off | diagnostic: put the species-scan matches into the prompt as hints |
 | `VEP_KEEP_ALIVE` | `-1` | how long Ollama keeps the model loaded; `-1` = forever, `0` = unload immediately, `5m` = five minutes |
@@ -202,10 +202,11 @@ priority_by_factor.json  # the current DRIVES dump (written 15 Sept); read direc
                          #   file is absent. NOT mentor-signed — nothing in the repo is.
 vep_options.json         # the 68-option catalogue
 vep_consequences.json    # 41 VEP consequence terms (SO definitions)
-training_examples.json   # 23 legacy examples: --two-pass in-context corpus, and the checker's
-                         #   use-case tie-break when two options conflict
-requirements.txt         # openai + flask (web UI)
-results/                 # recommendations and evaluation reports
+training_examples.json   # 23 stage-B examples: the --two-pass in-context corpus. The default
+                         #   path does not read them.
+requirements.txt         # openai (CLI) + flask (the web UI in ../work/webapp/)
+legacy/                  # NOT USED BY THE TOOL — the stage-B benchmark, a reference PDF and
+                         #   saved output from March 2026. See legacy/README.md.
 ```
 
 Design rationale, deterministic invariant harnesses (79 checks, no GPU), the full option
@@ -217,10 +218,10 @@ dossier and the generation pipeline live one level up in `work/`; see `../work/R
 release-116 documentation pages, with `species_restriction`, dependencies, conflicts and the
 factor-keyed priorities the resolver reads.
 
-**What the shipped path uses.** The five factor values from the classifier plus the priority
-table. The 23 legacy examples in `training_examples.json` are also read on this path — the
-checker uses them for one thing only, breaking ties when two options conflict, by detecting a
-use case from the query against the old seven-category labels.
+**What the shipped path uses.** The five factor values from the classifier, and nothing else.
+They index the priority table; the checker then applies conflicts, gates and dependencies,
+ranking a conflict by the priority the FACTOR RESOLUTION gives each option. The 23 examples in
+`training_examples.json` play no part — they are read only under `--two-pass`.
 
 **Evaluation scenarios.** The pipeline is scored on the **31 candidate scenarios** in
 `../work/generation/candidates/iced.json`, generated and ICE-screened by the pipeline in
@@ -240,9 +241,9 @@ The five factors are:
 The old single-label use-case scheme (rare-disease-germline / somatic-cancer / …) was
 retired from the priority table in September 2026: a mouse somatic SV is somatic **and**
 structural **and** non-human at once, and forcing it into one bucket picks the wrong
-priorities. See `../work/research/taxonomy_proposal.md`. The scheme still lives in two
-places: as the labels on `training_examples.json`, and inside the checker's conflict
-tie-break.
+priorities. See `../work/research/taxonomy_proposal.md`. It survives only as the labels on
+`training_examples.json` and in `legacy/`; it decides nothing. The checker's conflict
+tie-break stopped reading it on 2026-09-13 and now ranks on the factor resolution.
 
 ## Evaluation
 
@@ -258,7 +259,7 @@ run the harnesses to regenerate. The latest saved set is
 `../work/results/final_2026-09-15/`; those runs had `VEP_SPECIES_HINT=1` on and have not
 been re-run since it was switched off by default.
 
-`evaluate.py` in the demo is the **legacy** benchmark: it scores the two-pass draft
+`legacy/evaluate.py` is the **stage-B** benchmark: it scores the two-pass draft
 recommender's text on 8 hardcoded test queries, weighted by the retired use-case snapshot
 kept in `../work/harness/legacy/`. It never exercises the shipped one-call path. Kept only
 for comparison work against older figures.
@@ -274,7 +275,7 @@ it is what the engine reads. A demotion in `DRIVES` does nothing until `seed_pri
 is re-run to overwrite the JSON. When a signed-off table lands, drop it in at the same path.
 
 **Class-weighted F1 is a directional headline, not a mentor-blessed number.** Last measured
-at 0.900 (`../work/harness/class_weighted_f1.py`), with `VEP_SPECIES_HINT=1` on and not yet
+at 0.900 (`../work/harness/exp/class_weighted_f1.py`), with `VEP_SPECIES_HINT=1` on and not yet
 re-run since it was switched off by default. The weights are ours.
 
 ---

@@ -1226,7 +1226,7 @@ UNDERSPECIFIED_POLICY = {
         "why": "you didn't say which regions matter, so both are covered",
     },
     # FAIL-CLOSED, and measured: leaving this open is NOT the safe choice, which was the first guess.
-    # Sharper than that, and verified by `work/harness/defaults_evidence.py` across all 31 review rows:
+    # Sharper than that, and verified by `work/harness/suites/defaults_evidence.py` across all 31 review rows:
     # silence is strictly worse than EITHER value. It carries germline's risk on `frequency` AND drops
     # `check_existing`, which germline and somatic both enable. So the first decision is that something
     # must be guessed at all; only the second is that it is somatic.
@@ -1358,7 +1358,7 @@ def _enabled_for(factor_tuple, vep_options):
 # that the user never sees — makes the interruption depend on a label nobody agrees on.
 #
 # The two readings were priced before choosing: on the current guesses they raise identical questions
-# (`work/harness/ask_rate.py`, arms `shipped` and `shipped+wide-bar`), so the wider bar costs nothing
+# (`work/harness/suites/ask_rate.py`, arms `shipped` and `shipped+wide-bar`), so the wider bar costs nothing
 # today. It diverges only if the guesses are removed, where it adds 6 `origin` questions. Named rather
 # than hardcoded so the comparison stays runnable.
 ASK_BAR_PRIORITIES = ("recommended",)
@@ -1753,7 +1753,7 @@ def resolve_underspecified(rec, vep_options, mode="state", user_query=None, asse
     The default is "state" rather than "ask" because a tool that interrogates its users has moved the
     work back onto them. Asking is opt-in. `analysis_goal` and ASSEMBLY are the two things asked about;
     every other factor has a safe value and reaches no question. Over the 78 clean ablations that is 12
-    questions on 12 queries, all `analysis_goal` (`work/harness/ask_rate.py`, the number of record).
+    questions on 12 queries, all `analysis_goal` (`work/harness/suites/ask_rate.py`, the number of record).
     It was 46 on 40 until 2026-09-15, when assembly stopped being asked and became a GRCh38
     assumption: 34 of the 40 were the build. The ablations are the stress test, not the experience: on the 31
     review rows AS WRITTEN it asks nothing on 15, never asks two questions, and never asks about
@@ -2378,7 +2378,7 @@ _SPECIES_DATA = None
 
 def load_species_data():
     """Per-species DATA availability -- SIFT, PolyPhen, CCDS, variant synonyms, custom frequency files --
-    built by work/harness/build_species_data.py from Ensembl's own sources. None if absent (additive:
+    built by work/harness/build/build_species_data.py from Ensembl's own sources. None if absent (additive:
     without it the gate below does nothing and non-human keeps the pre-2026-09-15 behaviour)."""
     global _SPECIES_DATA
     if _SPECIES_DATA is None:
@@ -2395,7 +2395,7 @@ def species_key(production_name):
 def load_species_index():
     """The 756-name / 356-species index, or None if it has not been generated.
 
-    Regenerate with `work/harness/build_species_index.py`. Absent, everything falls back to the
+    Regenerate with `work/harness/build/build_species_index.py`. Absent, everything falls back to the
     16-species `_SPECIES_KEYWORDS` scan, so this is additive.
     """
     global _SPECIES_INDEX
@@ -2655,10 +2655,14 @@ def check_and_fix_violations(enabled: set, disabled: set, vep_options: list,
     """Check enabled options for constraint violations and auto-correct them.
 
     Loads conflict rules, species restrictions and dependencies from
-    vep_options.json. For conflicts, disables the option with lower priority for
-    the detected use case (more restrictive option loses on ties). For
-    dependencies, auto-enables a required option, unless that option is itself a
-    species violation, in which case the dependent option is disabled instead.
+    vep_options.json. For conflicts, disables the option the FACTOR RESOLUTION prices lower
+    (`_priority_rank(oid, resolved)`); on a tie the more restrictive option loses, then
+    alphabetical order decides. For dependencies, auto-enables a required option, unless that
+    option is itself a species violation, in which case the dependent option is disabled instead.
+
+    NOT the use case. Until 2026-09-13 the ranking read the retired seven-use-case table; it now
+    reads the resolved factor tuple. `_detect_use_case` is still called below and its result is
+    still discarded -- see the note there.
 
     Returns a list of violation dicts with keys:
         type: 'conflict', 'species' or 'dependency'
@@ -2698,8 +2702,6 @@ def check_and_fix_violations(enabled: set, disabled: set, vep_options: list,
     # reading "mouse" out of the prose — human-only options the table recommends were then stripped
     # inside restore's re-check, whose violation list is discarded, so they vanished with no warning.
     species = species_override or infer_species(user_query)
-    use_case = _detect_use_case(enabled, vep_options, training_examples,
-                                user_query, retrieval_mode=retrieval_mode)
 
     # Build lookup maps (single pass over the catalogue; mutated sets stay small)
     conflicts_map = {}
@@ -2837,10 +2839,11 @@ def check_and_fix_violations(enabled: set, disabled: set, vep_options: list,
                 rank_a = _priority_rank(oid_a, resolved)
                 rank_b = _priority_rank(oid_b, resolved)
 
-                # Tie-break ladder: (1) use-case priority — the option that matters
-                # more for this use case wins; (2) restrictiveness — drop the option
+                # Tie-break ladder: (1) the FACTOR RESOLUTION's priority — the option this
+                # scenario's tuple prices higher wins; (2) restrictiveness — drop the option
                 # that suppresses more output (most_severe > pick > per_gene); (3)
                 # alphabetical, purely so the result is deterministic.
+                # The use case has played no part here since 2026-09-13.
                 if rank_a != rank_b:
                     loser = oid_a if rank_a < rank_b else oid_b
                     winner = oid_b if loser == oid_a else oid_a
@@ -3697,6 +3700,10 @@ def build_recommendation_json(query, response_text, vep_options, training_exampl
     disabled = {r["option_id"] for r in records if r["action"] == "disable"}
 
     species = infer_species(query)
+    # The retired seven-category scheme, reported as `detected_use_case` below. It decides nothing:
+    # `get_confidence` ignores the argument, and the checker's conflict ranking reads the factor
+    # resolution. Kept only so this function's JSON keeps its shape for its one caller,
+    # work/harness/build/build_output_json.py (stage B, Exp 8).
     use_case = _detect_use_case(enabled, vep_options, training_examples, query, retrieval_mode)
 
     # DERIVED HERE, not 40 lines further down where the command is built. The checker call below

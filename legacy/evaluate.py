@@ -1,4 +1,26 @@
 #!/usr/bin/env python3
+"""LEGACY — the stage-B benchmark. Not used by the shipped tool; see legacy/README.md.
+
+Scores the TWO-PASS design that was the default until 2026-09-14. Each element below describes
+something that no longer exists:
+
+  * the pipeline it measures (retrieval -> prompt -> LLM -> parse -> checker) was replaced on
+    2026-09-14 by a single call: prose -> factor tuple -> resolver -> checker;
+  * `critical` was deleted as a tier on 2026-08-19, so the 3x weight in _PRIORITY_WEIGHT
+    applies to a bucket that is always empty;
+  * the `semantic` condition tests a retrieval design the tool no longer has (`--semantic` was
+    removed 2026-09-16);
+  * the ground truth is the retired seven-use-case table, snapshot now in work/harness/legacy/.
+
+Its headline metric, enable-F1, is recorded in EXPERIMENTS.md Exp 20 as UNDEFINED on the default
+path -- it scored the draft, and there is no draft. Do not quote a number from this file.
+
+Measuring the current system: work/harness/exp/factor_accuracy.py (the factor tuple),
+factor_grid.py (600 queries), class_weighted_f1.py (what an error does to the output).
+
+The original docstring follows, unaltered.
+"""
+
 """Evaluate VEP AI Assistant: knowledge-base-enhanced vs bare model.
 
 Offline benchmark that sits at the end of the pipeline (retrieval -> prompt -> LLM ->
